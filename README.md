@@ -95,6 +95,18 @@ Run `meetroom help` for the full list. Highlights by area:
 
 **V3:** plugins (shell command templates; `--project` scope persists in `.meetroom/plugins.json`) · PR integration (`review submit --pr` pushes `meetroom/<session>/<task>` and opens a PR via `gh`/`glab` or `MEETROOM_PR_CMD`; sync back with `review pr-sync` or the webhook endpoint) · CI gate (`--requires-ci`; generic webhook — see `meetroom ci webhook-url`) · cost/capability-aware routing (complexity estimate + suggested agent on every task) · agent reputation (`.meetroom/reputation.json`, informational) · confidence scoring · QA test gate (`--requires-tests` + `test report`) · session fork/compare · rollback to the session's base commit · guilds (`~/.meetroom/guilds.json`) · Slack/Discord/webhook notification bridge · pair mode · natural-language task decomposition (`plan`, approval-gated) · sandboxed execution via git worktrees (`sandbox <task-id>`).
 
+**V4 — operations & autonomy:** agent runner/supervisor (`agent spawn` with restart policies + logs) · budget guardrails (`budget set`, auto-pause on breach) · cron routines that create sessions from templates · liveness heartbeats with idle/disconnected detection and automatic task reassignment · cross-session attention queue (`attention` + ack/done/snooze) · versioned shared artifacts · escalation-timeout policies · session templates (`template save`, `start --template`).
+
+**V5 — intelligence layer:** line-range claims (`claim --lines A-B`; whole-file trumps ranges) · advisory conflict prediction on task creation · review copilot first pass (`MEETROOM_REVIEWER`) · learned routing (reputation + stall history blended into suggestions) · memory graph with `recall` search, supersedes edges, and per-file surfacing at claim time · global memory promotion (`memory promote`) · adaptive per-file claim timeouts (p90 of history) · delta briefs (`brief --since last`). Every intelligent feature degrades to a deterministic heuristic with no model configured.
+
+**V6 — teams & trust:** multi-operator identity with role-gated privileged commands (`operator invite`, `login`; solo mode stays frictionless) · TLS daemon option · repo policy engine (`.meetroom/policy.json` — human-review / two-reviewers / ci-pass / tests-pass rules that per-task flags can't relax) · tamper-evident audit chain (`audit verify`) · encrypted secrets with `{secret:NAME}` exec-time substitution and automatic chat redaction · org report · session purge (keeps the report, drops payloads).
+
+**V7 — ecosystem:** agent adapter kit (`adapter generate claude|codex|generic`) · plugin permission manifests (dangerous permissions need `--confirm`) · HMAC-signed inbound webhooks (`integration add` → external systems post into room chat) · GitHub issue sync (`sync github --repo o/n --label meetroom`) · interactive web viewer (approve/resolve/pause/prompt from the browser with an operator key) · OpenAPI contract generated from the live route table (`/api/openapi.json`) · blueprint bundles (`bundle export/import`).
+
+**V8 — self-improving org:** autonomy levels L0–L4 (`autonomy set`; L0 = agents discuss but don't act) · meta-agent operator (`MEETROOM_OPERATOR` handles attention items at L3+ behind a veto window; `veto <action-id>`) · retrospective engine (auto-generated at session end with config suggestions; `retro`) · plan simulation with cost/time estimates from history (`simulate`) · opt-in fleet learning · self-healing detectors (blocked-board deadlocks, claim cycles, post-done CI regressions) · outcome verification (`task create --verify "<cmd>"` + `verify run` gates done) · epics spanning sessions (`epic create/status`, `task create --epic`).
+
+The V4–V8 specs live in [`specs/`](specs/); the deep-dive usage manual is [`GUIDE.md`](GUIDE.md). Not implemented from the specs (documented there as bigger lifts): the V6 hosted relay, tree-sitter symbol claims (line ranges shipped instead), and the V7 IDE extension.
+
 ## Environment variables
 
 | Variable | Purpose |
@@ -105,7 +117,11 @@ Run `meetroom help` for the full list. Highlights by area:
 | `MEETROOM_SUMMARIZER` | shell command (stdin→stdout) used to distill decisions into memory, e.g. an LLM CLI |
 | `MEETROOM_PLANNER` | shell command for `meetroom plan` decomposition (JSON in/out); heuristic fallback otherwise |
 | `MEETROOM_PR_CMD` | PR-creation command template for `review submit --pr` (`{branch}`, `{title}`) |
-| `MEETROOM_HOME` | where guilds are stored (default `~/.meetroom`) |
+| `MEETROOM_REVIEWER` | shell command for the review copilot (diff on stdin → JSON findings on stdout) |
+| `MEETROOM_OPERATOR` | shell command for the L3+ meta-agent (attention item JSON in → action JSON out) |
+| `MEETROOM_OPERATOR_KEY` | operator key for privileged commands (or `meetroom login --key`) |
+| `MEETROOM_TLS_CERT` / `MEETROOM_TLS_KEY` | serve the daemon over HTTPS |
+| `MEETROOM_HOME` | where guilds/templates/secrets/global memory live (default `~/.meetroom`) |
 
 ## Remote sessions
 

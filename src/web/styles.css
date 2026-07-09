@@ -70,3 +70,28 @@ main {
 .tag { font-size: 10px; padding: 1px 6px; border: 1px solid #30363d; border-radius: 8px; margin-left: 4px; color: #8b949e; }
 .escalated { color: #f85149; font-weight: bold; }
 .empty { color: #484f58; font-style: italic; padding: 4px 0; }
+.btn {
+  background: #1b1f27;
+  color: #d7dae0;
+  border: 1px solid #30363d;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+.btn:hover { border-color: #79c0ff; }
+.btn.approve { color: #7ee787; }
+.btn.reject { color: #f85149; }
+input {
+  background: #1b1f27;
+  color: #d7dae0;
+  border: 1px solid #30363d;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+}
+#prompt-box { flex: 1; }
+#op-key { width: 160px; margin-left: auto; }
+.actions { margin-top: 4px; display: flex; gap: 6px; }

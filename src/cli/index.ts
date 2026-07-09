@@ -34,6 +34,18 @@ import {
 import { cmdGuild } from "./commands/guild.js";
 import { cmdAgent, cmdArtifact, cmdAttention, cmdBudget, cmdRoutine, cmdTemplate } from "./commands/ops.js";
 import { cmdAudit, cmdLogin, cmdOperator, cmdOrg, cmdPurge, cmdSecret } from "./commands/trust.js";
+import {
+  cmdAdapter,
+  cmdAutonomy,
+  cmdBundle,
+  cmdEpic,
+  cmdIntegration,
+  cmdRetro,
+  cmdSimulate,
+  cmdSync,
+  cmdVerify,
+  cmdVeto,
+} from "./commands/evolve.js";
 import { readLock, DEFAULT_PORT } from "./client.js";
 
 const LOGO = String.raw`
@@ -78,12 +90,30 @@ review gate
   ci report <task-id> passed|failed|pending [--url U] · ci webhook-url
 
 extend & observe
-  plugin install <name> --command "<cmd>" [--project] · plugin list · plugin run <name> [args]
+  plugin install <name> --command "<cmd>" [--project] [--permissions a,b] · plugin list/run
   notify configure --webhook|--slack-webhook|--discord-webhook <url> [--events a,b]
-  plan "<feature>" · plan approve|discard <id>
+  plan "<feature>" · plan approve|discard <id> · simulate "<feature>"
   guild create "<name>" --members "ident:role[:tier],..." · guild list
   usage report --in N --out N --cost X · usage show
-  sandbox <task-id> · memory · reputation · roles
+  sandbox <task-id> · memory [promote <node-id>] · recall "<query>" · reputation · roles
+
+operations (V4)
+  agent spawn <name> --cmd "..." [--restart on-crash] · agent stop/restart/logs/list
+  budget set [--agent <name>] --max-cost USD|--max-tokens N [--on-breach ...] · budget show
+  attention [ack|done|snooze <id>] · artifact write/read/list
+  routine create "<name>" --cron "0 2 * * *" [--template t] · routine list/delete
+  template save <name> [--user] · start --template <name>
+
+teams & trust (V6)
+  operator invite <name> --role r · operator list/revoke · login --key K
+  secret set/list/rm <NAME> · audit verify · org report · purge [session-id] --yes
+
+ecosystem & autonomy (V7/V8)
+  adapter generate <claude|codex|generic> --name N [--role R]
+  integration add <source> --secret S · sync github --repo owner/name
+  bundle export|import <file.mrb> · epic create/list/status
+  autonomy set <0-4> [--veto-window M] · veto <action-id>
+  verify run <task-id> · retro [session-id] · brief --since <ts|last>
 
 Most commands read .meetroom/lock in the cwd, so no --session flag is needed
 after start/join. Act as a specific agent with --as <name> or MEETROOM_AGENT.
@@ -229,6 +259,26 @@ async function main(): Promise<void> {
       return cmdOrg(parsed);
     case "purge":
       return cmdPurge(parsed);
+    case "adapter":
+      return cmdAdapter(parsed);
+    case "integration":
+      return cmdIntegration(parsed);
+    case "sync":
+      return cmdSync(parsed);
+    case "bundle":
+      return cmdBundle(parsed);
+    case "autonomy":
+      return cmdAutonomy(parsed);
+    case "veto":
+      return cmdVeto(parsed);
+    case "verify":
+      return cmdVerify(parsed);
+    case "retro":
+      return cmdRetro(parsed);
+    case "simulate":
+      return cmdSimulate(parsed);
+    case "epic":
+      return cmdEpic(parsed);
     default:
       console.error(`meetroom: unknown command "${command}" — run \`meetroom help\``);
       process.exit(1);

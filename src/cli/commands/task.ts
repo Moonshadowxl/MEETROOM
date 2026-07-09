@@ -16,9 +16,13 @@ export async function cmdTask(parsed: Parsed): Promise<void> {
       dependsOn: csv(parsed.flags["depends-on"]),
       requiresCI: !!parsed.flags["requires-ci"],
       requiresTests: !!parsed.flags["requires-tests"],
+      // V8 #7 — the acceptance test, declared before implementation starts.
+      verify: parsed.flags.verify ? { command: parsed.flags.verify as string } : undefined,
+      epicId: parsed.flags.epic, // V8 #8
     });
     const t = data.task;
     console.log(`task ${t.id} created (${t.estimatedComplexity})${t.suggestedAgentId ? ` — routing suggests agent ${t.suggestedAgentId}` : ""}`);
+    for (const w of t.conflictWarnings ?? []) console.log(`  warning: ${w}`);
     return;
   }
 

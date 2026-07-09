@@ -6,6 +6,7 @@ import { estimateComplexity, suggestAgent } from "./routing.js";
 import { updateReputationOnTaskDone } from "./reputation.js";
 import { predictConflicts } from "./intelligence.js";
 import { policyViolations } from "./trust.js";
+import { linkTaskToEpic, recordFleetStat } from "./evolve.js";
 
 // V2 #1 — task board: agents claim *work*, not just paths. File claims stay
 // the low-level primitive underneath.
@@ -22,6 +23,8 @@ export function createTask(
     dependsOn?: string[];
     requiresCI?: boolean;
     requiresTests?: boolean;
+    verify?: { command: string; timeoutSeconds?: number };
+    epicId?: string;
   }
 ): { ok: true; task: Task } | { ok: false; error: string } {
   for (const dep of opts.dependsOn ?? []) {
@@ -36,9 +39,14 @@ export function createTask(
     dependsOn: opts.dependsOn,
     requiresCI: opts.requiresCI,
     requiresTests: opts.requiresTests,
+    verify: opts.verify, // V8 #7 — the acceptance test, written before implementation bias sets in
+    epicId: opts.epicId,
     createdAt: now(),
     updatedAt: now(),
   };
+  if (opts.epicId && !linkTaskToEpic(session.cwd, opts.epicId, session.id, task.id)) {
+    return { ok: false, error: `unknown epic ${opts.epicId}` };
+  }
   // V3 #4 — routing suggestion (advisory only; agents/human still decide).
   task.estimatedComplexity = estimateComplexity(task);
   task.suggestedAgentId = suggestAgent(session, task);
@@ -158,6 +166,8 @@ export function moveTask(
   reg.event(session, "task-move", agentId, { taskId, status });
   if (status === "done") {
     updateReputationOnTaskDone(reg, session, task);
+    // V8 #5 — opt-in fleet stats (identity/complexity/turnaround/rework only).
+    recordFleetStat(session, task, session.reviews.filter((r) => r.taskId === task.id && r.status === "changes-requested").length);
     unblockDependents(reg, session, task.id);
   }
   return { ok: true, status };

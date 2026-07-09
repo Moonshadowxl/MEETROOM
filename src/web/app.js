@@ -6,7 +6,19 @@ let sessionId = params.get("session");
 const token = params.get("token"); // for remote sessions
 
 function headers() {
-  return token ? { "x-meetroom-token": token } : {};
+  const h = { "content-type": "application/json" };
+  if (token) h["x-meetroom-token"] = token;
+  const opKey = localStorage.getItem("meetroom-operator-key");
+  if (opKey) h["x-meetroom-operator"] = opKey;
+  return h;
+}
+
+// V7 #5 — the viewer acts, using the same HTTP API as the CLI.
+async function act(method, path, body) {
+  const res = await fetch(path, { method, headers: headers(), body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) alert(data.error || `HTTP ${res.status}`);
+  refresh();
 }
 
 async function fetchJson(path) {
@@ -61,6 +73,10 @@ function render(session) {
   const statusEl = document.getElementById("session-status");
   statusEl.textContent = session.status;
   statusEl.className = `pill ${session.status}`;
+  const pauseBtn = document.getElementById("pause-btn");
+  pauseBtn.textContent = session.status === "paused" ? "resume" : "pause";
+  pauseBtn.style.display = session.status === "ended" ? "none" : "";
+  pauseBtn.onclick = () => act("POST", `/api/sessions/${session.id}/${session.status === "paused" ? "resume" : "pause"}`);
 
   const agents = document.getElementById("agents");
   agents.replaceChildren();
@@ -98,6 +114,13 @@ function render(session) {
     head.textContent = `[${p.status}] ${p.content}`;
     card.appendChild(head);
     card.appendChild(el("div", "meta", `${p.id} · by ${agentName(session, p.authorId)} · ${p.objections.length} objections${p.votes ? ` · votes: ${p.votes.filter((v) => v.vote === "yes").length}y/${p.votes.filter((v) => v.vote === "no").length}n` : ""}`));
+    if (p.status === "escalated" || p.status === "open" || p.status === "contested") {
+      const actions = el("div", "actions");
+      const resolveBtn = el("button", "btn approve", "resolve");
+      resolveBtn.onclick = () => act("POST", `/api/sessions/${session.id}/proposals/${p.id}/resolve`, { agentId: "human" });
+      actions.appendChild(resolveBtn);
+      card.appendChild(actions);
+    }
     proposals.appendChild(card);
   }
 
@@ -135,6 +158,19 @@ function render(session) {
     card.appendChild(
       el("div", "meta", `by ${agentName(session, r.authorAgentId)}${r.reviewerAgentId ? ` · reviewed by ${agentName(session, r.reviewerAgentId)}` : ""} · ${r.comments.length} comments`)
     );
+    if (r.status === "pending") {
+      const actions = el("div", "actions");
+      const ok = el("button", "btn approve", "approve");
+      ok.onclick = () => act("POST", `/api/sessions/${session.id}/reviews/${r.id}/decide`, { agentId: "human", decision: "approved" });
+      const no = el("button", "btn reject", "request changes");
+      no.onclick = () => {
+        const comment = prompt("what needs to change?");
+        if (comment) act("POST", `/api/sessions/${session.id}/reviews/${r.id}/decide`, { agentId: "human", decision: "changes-requested", comment });
+      };
+      actions.appendChild(ok);
+      actions.appendChild(no);
+      card.appendChild(actions);
+    }
     reviews.appendChild(card);
   }
 
@@ -171,6 +207,20 @@ async function refresh() {
     // daemon briefly unreachable — keep last render
   }
 }
+
+// Operator key (V6/V7): stored locally, sent on every request.
+const opKeyInput = document.getElementById("op-key");
+opKeyInput.value = localStorage.getItem("meetroom-operator-key") || "";
+opKeyInput.onchange = () => localStorage.setItem("meetroom-operator-key", opKeyInput.value.trim());
+
+// prompt-all from the viewer.
+document.getElementById("prompt-box").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !sessionId) return;
+  const message = e.target.value.trim();
+  if (!message) return;
+  e.target.value = "";
+  act("POST", `/api/sessions/${sessionId}/say`, { agentId: "human", message });
+});
 
 loadSessionList().then(refresh);
 setInterval(refresh, 2000);

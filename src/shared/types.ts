@@ -280,6 +280,18 @@ export type Session = {
   semanticClaims: SemanticClaim[];
   // V7 #3 — inbound integration secrets (HMAC), keyed by source name
   integrations: { source: string; secret: string }[];
+  // V8 #2 — meta-agent actions awaiting their veto window
+  pendingActions?: PendingAction[];
+};
+
+// V8 #2 — a meta-agent decision: announced, vetoable, then executed.
+export type PendingAction = {
+  id: string;
+  kind: "resolve-proposal" | "reassign-task" | "pause-room" | "wake-human";
+  data: Record<string, unknown>;
+  reason: string;
+  executeAt: string; // end of the veto window
+  status: "pending" | "executed" | "vetoed";
 };
 
 // ---- V5: intelligence layer ------------------------------------------------

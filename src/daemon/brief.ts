@@ -1,6 +1,7 @@
 import type { Session } from "../shared/types.js";
 import { activeMemoryNodes } from "./memory.js";
 import { unmetDependencies } from "./tasks.js";
+import { loadEpics } from "./evolve.js";
 
 // V2 #5 — session replay / auto-brief. A structured summary for late joiners
 // (and `meetroom brief` on demand) instead of a raw chat transcript.
@@ -51,6 +52,14 @@ export function generateBrief(session: Session): string {
   const pendingReviews = session.reviews.filter((r) => r.status === "pending");
   for (const r of pendingReviews) lines.push(`- [review pending] ${r.id} for task ${r.taskId}`);
   lines.push("");
+
+  // V8 #8 — active epics orient every session toward the long-horizon goal.
+  const epics = loadEpics(session.cwd).filter((e) => e.status === "active");
+  if (epics.length) {
+    lines.push("## Active epics");
+    for (const e of epics) lines.push(`- ${e.id}: ${e.title} — ${e.northStar} (${e.taskRefs.length} tasks so far)`);
+    lines.push("");
+  }
 
   // V2 #6 / V5 #5-#6 — active memory (project + promoted global, superseded
   // nodes filtered) auto-loads into the brief.

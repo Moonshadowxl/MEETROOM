@@ -28,6 +28,21 @@ import {
   type OperatorRole,
 } from "./trust.js";
 import {
+  agentActionAllowed,
+  createEpic,
+  epicStatus,
+  generateRetro,
+  loadEpics,
+  queueAction,
+  saveRetro,
+  simulatePlan,
+  sweepMetaAgent,
+  sweepPendingActions,
+  sweepSelfHealing,
+  vetoAction,
+} from "./evolve.js";
+import { createHmac } from "node:crypto";
+import {
   agentBudgetBlocked,
   checkBudgets,
   cronMatches,
@@ -91,7 +106,7 @@ function authorized(req: IncomingMessage, session: Session): boolean {
 
 // Mutations that represent *work* are gated while a room is paused (V2 #7).
 // Chat, join, and status stay available so agents can see the paused state.
-function ensureWritable(session: Session, res: ServerResponse, agentId?: string): boolean {
+function ensureWritable(session: Session, res: ServerResponse, agentId?: string, discussionOnly = false): boolean {
   if (session.status === "paused") {
     bad(res, "room paused — no new claims or task moves until `meetroom resume`", 409);
     return false;
@@ -104,6 +119,15 @@ function ensureWritable(session: Session, res: ServerResponse, agentId?: string)
   if (agentId && agentBudgetBlocked(session, agentId)) {
     bad(res, "your budget is exhausted — a human must raise it (`meetroom budget set`) before you take new work", 402);
     return false;
+  }
+  // V8 #1 — at autonomy L0, agents observe and discuss (propose/object/vote)
+  // but don't act on work (claims, tasks, reviews).
+  if (!discussionOnly) {
+    const autonomy = agentActionAllowed(session, agentId);
+    if (!autonomy.ok) {
+      bad(res, autonomy.error!, 403);
+      return false;
+    }
   }
   return true;
 }
@@ -129,6 +153,7 @@ function saveProjectPlugins(cwd: string, plugins: Plugin[]): void {
 
 type Route = {
   method: string;
+  path: string; // original template, e.g. /api/sessions/:id/claim
   pattern: RegExp;
   keys: string[];
   handler: (ctx: Ctx) => void | Promise<void>;
@@ -152,7 +177,7 @@ function route(method: string, path: string, handler: Route["handler"], gated = 
         .join("/") +
       "$"
   );
-  return { method, pattern, keys, handler, gated };
+  return { method, path, pattern, keys, handler, gated };
 }
 
 export function buildServer(reg: Registry) {
@@ -409,7 +434,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/propose",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId, true)) return;
         const { agentId, content } = c.body;
         if (!agentId || !content) return bad(c.res, "agentId and content required");
         const proposal = createProposal(reg, s, agentId, content);
@@ -423,7 +448,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/proposals/:pid/object",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId, true)) return;
         const result = objectToProposal(reg, s, c.params.pid, c.body.agentId, c.body.reason ?? "");
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -435,7 +460,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/proposals/:pid/resolve",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId, true)) return;
         const result = resolveProposal(reg, s, c.params.pid, c.body.agentId, c.body.response);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -447,7 +472,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/proposals/:pid/vote",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId, true)) return;
         const result = voteOnProposal(reg, s, c.params.pid, c.body.agentId, c.body.vote);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -461,9 +486,9 @@ export function buildServer(reg: Registry) {
       (c) => {
         const s = withSession(c);
         if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
-        const { title, description, files, dependsOn, requiresCI, requiresTests } = c.body;
+        const { title, description, files, dependsOn, requiresCI, requiresTests, verify, epicId } = c.body;
         if (!title) return bad(c.res, "title required");
-        const result = createTask(reg, s, { title, description, files, dependsOn, requiresCI, requiresTests });
+        const result = createTask(reg, s, { title, description, files, dependsOn, requiresCI, requiresTests, verify, epicId });
         json(c.res, result.ok ? 201 : 400, result);
       },
       true
@@ -602,8 +627,10 @@ export function buildServer(reg: Registry) {
       stopAllRunners(reg, s); // V4 #1 — no orphaned agent processes
       s.status = "ended";
       const memory = distillSessionIntoMemory(s); // V2 #6
-      reg.event(s, "session-ended", undefined, { decisions: memory.decisions.length });
-      json(c.res, 200, { ok: true, memory });
+      const retro = generateRetro(s); // V8 #3 — lessons don't evaporate
+      const retroPath = saveRetro(s, retro);
+      reg.event(s, "session-ended", undefined, { decisions: memory.decisions.length, retroPath });
+      json(c.res, 200, { ok: true, memory, retro, retroPath });
     }),
 
     // ---- fork (V3 #8) ---------------------------------------------------------
@@ -878,7 +905,125 @@ export function buildServer(reg: Registry) {
       reg.event(s, "session-purged", undefined, { reportPath });
       json(c.res, 200, { ok: true, reportPath });
     }),
+
+    // ---- V7: inbound integrations ------------------------------------------------
+    route("POST", "/api/sessions/:id/integrations", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
+      const s = withSession(c);
+      if (!s) return;
+      const { source, secret } = c.body;
+      if (!source || !secret) return bad(c.res, "source and secret required");
+      s.integrations = s.integrations.filter((i) => i.source !== source);
+      s.integrations.push({ source, secret });
+      reg.save(s);
+      json(c.res, 200, { ok: true });
+    }),
+
+    // V7 #3 — external systems talk back: HMAC-signed messages land in chat.
+    route("POST", "/api/sessions/:id/inbound", (c) => {
+      const s = reg.get(c.params.id); // signature IS the auth — no session token needed
+      if (!s) return bad(c.res, "no such session", 404);
+      const { source, author, text, signature } = c.body;
+      if (!source || !text) return bad(c.res, "source and text required");
+      const integration = s.integrations.find((i) => i.source === source);
+      if (!integration) return bad(c.res, `unknown integration source "${source}" — add it with \`meetroom integration add\``, 403);
+      const expected = createHmac("sha256", integration.secret).update(text).digest("hex");
+      if (signature !== expected) return bad(c.res, "bad signature (HMAC-SHA256 of the text with the shared secret)", 403);
+      const msg = reg.chat(s, { agentId: "system", message: `[${source}] ${author ?? "someone"}: ${text}` });
+      json(c.res, 200, { ok: true, message: msg });
+    }),
+
+    // ---- V8: autonomy / veto / verify / retro / simulate / epics -------------------
+    route("POST", "/api/sessions/:id/autonomy", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
+      const s = withSession(c);
+      if (!s) return;
+      const level = Number(c.body.level);
+      if (![0, 1, 2, 3, 4].includes(level)) return bad(c.res, "level must be 0-4");
+      s.config.autonomy = { level: level as 0 | 1 | 2 | 3 | 4, vetoWindowMinutes: Number(c.body.vetoWindowMinutes) || 10 };
+      reg.event(s, "autonomy-changed", undefined, { level });
+      reg.notice(s, `autonomy level set to L${level}${level >= 3 ? ` (meta-agent active, ${s.config.autonomy.vetoWindowMinutes}m veto window)` : ""}`);
+      json(c.res, 200, { ok: true, autonomy: s.config.autonomy });
+    }),
+
+    route("POST", "/api/sessions/:id/actions/:aid/veto", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const result = vetoAction(reg, s, c.params.aid);
+      reg.save(s);
+      json(c.res, result.ok ? 200 : 404, result);
+    }),
+
+    // V8 #7 — the CLI runs the goal test locally and reports the outcome here.
+    route("POST", "/api/sessions/:id/tasks/:tid/verify", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const task = s.tasks.find((t) => t.id === c.params.tid);
+      if (!task) return bad(c.res, "no such task", 404);
+      task.verifyResult = { passed: !!c.body.passed, output: String(c.body.output ?? "").slice(0, 10_000), at: now() };
+      task.updatedAt = now();
+      reg.event(s, "verify-result", c.body.agentId, { taskId: task.id, passed: task.verifyResult.passed });
+      if (!task.verifyResult.passed) reg.notice(s, `verify FAILED for task ${task.id} ("${task.title}")`);
+      json(c.res, 200, { ok: true });
+    }),
+
+    route("GET", "/api/sessions/:id/retro", (c) => {
+      const s = withSession(c);
+      if (s) json(c.res, 200, { ok: true, retro: generateRetro(s) });
+    }),
+
+    // V8 #4 — price the plan before running it. Also stores the draft so a
+    // good simulation can be approved directly (still approval-gated).
+    route("POST", "/api/sessions/:id/simulate", (c) => {
+      const s = withSession(c);
+      if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+      if (!c.body.description) return bad(c.res, "description required");
+      const plan = createDraftPlan(reg, s, c.body.description);
+      const sim = simulatePlan(s, plan.tasks);
+      json(c.res, 200, { ok: true, plan, simulation: sim });
+    }),
+
+    route("POST", "/api/sessions/:id/epics", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const { title, northStar } = c.body;
+      if (!title) return bad(c.res, "title required");
+      const epic = createEpic(s.cwd, title, northStar ?? "");
+      reg.event(s, "epic-created", undefined, { epicId: epic.id, title });
+      json(c.res, 201, { ok: true, epic });
+    }),
+
+    route("GET", "/api/sessions/:id/epics", (c) => {
+      const s = withSession(c);
+      if (s) json(c.res, 200, { ok: true, epics: loadEpics(s.cwd) });
+    }),
+
+    route("GET", "/api/sessions/:id/epics/:eid/status", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const status = epicStatus(reg, s.cwd, c.params.eid);
+      if (!status) return bad(c.res, "no such epic", 404);
+      json(c.res, 200, { ok: true, ...status });
+    }),
   ];
+
+  // V7 #6 — the API contract, generated from the live route table so drift
+  // is structurally impossible.
+  routes.push(
+    route("GET", "/api/openapi.json", (c) => {
+      const paths: Record<string, Record<string, { summary: string }>> = {};
+      for (const r of routes) {
+        const path = r.path.replace(/:(\w+)/g, "{$1}");
+        paths[path] ??= {};
+        paths[path][r.method.toLowerCase()] = { summary: `${r.method} ${path}` };
+      }
+      json(c.res, 200, {
+        openapi: "3.0.0",
+        info: { title: "meetroom API", version: "8.0.0", description: "Auth: x-meetroom-token (remote sessions), x-meetroom-operator (privileged ops)" },
+        paths,
+      });
+    })
+  );
 
   const server = createServer(async (req, res) => {
     try {
@@ -927,6 +1072,9 @@ export function buildServer(reg: Registry) {
       sweepProposalTimeouts(reg, session);
       sweepLiveness(reg, session);
       sweepEscalations(reg, session);
+      sweepSelfHealing(reg, session); // V8 #6 — deadlock/regression detectors
+      sweepMetaAgent(reg, session); // V8 #2 — only acts at L3+ with MEETROOM_OPERATOR set
+      sweepPendingActions(reg, session);
     }
   }, 30_000);
   sweeper.unref();

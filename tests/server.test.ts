@@ -121,6 +121,31 @@ test("ended sessions reject work and export still functions", async () => {
   assert.ok((await res.text()).includes("Meetroom session report"));
 });
 
+test("inbound integration requires a valid HMAC signature", async () => {
+  const { createHmac } = await import("node:crypto");
+  const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
+  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const id = data.session.id;
+  await call("POST", `/api/sessions/${id}/integrations`, { source: "slack", secret: "shh" });
+
+  const badSig = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", signature: "nope" });
+  assert.equal(badSig.status, 403);
+
+  const signature = createHmac("sha256", "shh").update("ship it").digest("hex");
+  const good = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", signature });
+  assert.equal(good.status, 200);
+  const state = await call("GET", `/api/sessions/${id}/state`);
+  assert.ok(state.data.session.chatLog.some((m: any) => m.message.includes("[slack] dana: ship it")));
+});
+
+test("openapi contract is generated from the live route table", async () => {
+  const res = await fetch(`${base}/api/openapi.json`);
+  const spec = (await res.json()) as any;
+  assert.equal(spec.openapi, "3.0.0");
+  assert.ok(spec.paths["/api/sessions/{id}/claim"]);
+  assert.ok(spec.paths["/api/sessions/{id}/tasks/{tid}/verify"]);
+});
+
 test("fork clones agents and tasks into a new session", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
   const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
