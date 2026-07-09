@@ -1,5 +1,5 @@
 import type { Session } from "../shared/types.js";
-import { loadMemory } from "./memory.js";
+import { activeMemoryNodes } from "./memory.js";
 import { unmetDependencies } from "./tasks.js";
 
 // V2 #5 — session replay / auto-brief. A structured summary for late joiners
@@ -52,14 +52,38 @@ export function generateBrief(session: Session): string {
   for (const r of pendingReviews) lines.push(`- [review pending] ${r.id} for task ${r.taskId}`);
   lines.push("");
 
-  // V2 #6 — project memory auto-loads into the brief.
-  const memory = loadMemory(session.cwd);
-  if (memory.decisions.length > 0 || memory.conventions.length > 0) {
-    lines.push("## Project memory (from previous sessions)");
-    for (const c of memory.conventions) lines.push(`- convention: ${c}`);
-    for (const d of memory.decisions.slice(-15)) lines.push(`- ${d.summary} (${d.date.slice(0, 10)})`);
+  // V2 #6 / V5 #5-#6 — active memory (project + promoted global, superseded
+  // nodes filtered) auto-loads into the brief.
+  const nodes = activeMemoryNodes(session.cwd);
+  if (nodes.length > 0) {
+    lines.push("## Project memory (from previous sessions — query with `meetroom recall`)");
+    for (const n of nodes.slice(-15)) lines.push(`- [${n.kind}] ${n.summary} (${n.date.slice(0, 10)})`);
     lines.push("");
   }
 
+  return lines.join("\n");
+}
+
+/** V5 #8 — delta brief: what changed since a timestamp, for returning agents. */
+export function generateDeltaBrief(session: Session, since: string): string {
+  const lines: string[] = [];
+  lines.push(`# Since ${since} — session ${session.id} (${session.status})`);
+  const events = session.events.filter((e) => e.ts > since);
+  const chat = session.chatLog.filter((m) => m.ts > since && !m.to);
+  if (events.length === 0 && chat.length === 0) return lines.concat("", "Nothing happened. You're up to date.").join("\n");
+
+  const interesting = events.filter((e) =>
+    ["task-move", "task-created", "task-reassigned", "review-approved", "review-changes-requested", "proposal-resolved", "proposal-rejected", "escalation", "claim-timeout", "budget-breached", "agent-joined", "agent-disconnected", "session-paused", "session-resumed"].includes(e.type)
+  );
+  lines.push("", `## Events (${interesting.length} notable of ${events.length} total)`);
+  for (const e of interesting.slice(-40)) {
+    const who = e.agentId ? session.agents.find((a) => a.id === e.agentId)?.name ?? e.agentId : "";
+    lines.push(`- ${e.ts.slice(11, 19)} ${e.type}${who ? ` (${who})` : ""}${e.data ? ` ${JSON.stringify(e.data)}` : ""}`);
+  }
+  lines.push("", `## Chat (${chat.length} messages)`);
+  for (const m of chat.slice(-30)) {
+    const who = session.agents.find((a) => a.id === m.agentId)?.name ?? m.agentId;
+    lines.push(`- ${who}: ${m.message}`);
+  }
   return lines.join("\n");
 }

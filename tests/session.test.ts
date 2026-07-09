@@ -21,7 +21,7 @@ test("session ids follow <type>-<random4> and persist across registry restarts",
 });
 
 test("remote sessions get a token; local ones don't", () => {
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const local = reg.createSession({ type: "sxl", cwd: "/tmp/a" });
   const remote = reg.createSession({ type: "sxl", cwd: "/tmp/b", remote: true });
   assert.equal(local.token, undefined);
@@ -30,7 +30,7 @@ test("remote sessions get a token; local ones don't", () => {
 
 test("session end distills resolved proposals and done tasks into project memory", () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const s = reg.createSession({ type: "mmm", cwd: proj });
   s.proposals.push({
     id: "prop-1",
@@ -60,7 +60,7 @@ test("session end distills resolved proposals and done tasks into project memory
 
 test("brief includes board, claims, decisions, and prior project memory", () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const s1 = reg.createSession({ type: "sxl", cwd: proj });
   s1.proposals.push({
     id: "prop-1",
@@ -89,7 +89,7 @@ test("brief includes board, claims, decisions, and prior project memory", () => 
 });
 
 test("export produces markdown and json with usage aggregation", () => {
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const s = reg.createSession({ type: "sxl", cwd: "/tmp/p" });
   s.agents.push({
     id: "a1",
@@ -112,7 +112,7 @@ test("export produces markdown and json with usage aggregation", () => {
 });
 
 test("fork-style clone keeps agents/tasks but gets its own id (via createSession)", () => {
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const s = reg.createSession({ type: "sxl", cwd: "/tmp/p" });
   const fork = reg.createSession({ type: "sxl", cwd: s.cwd, forkedFrom: s.id });
   assert.notEqual(fork.id, s.id);

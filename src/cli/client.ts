@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 // Thin HTTP client + local context resolution used by every command.
 //
@@ -93,6 +94,18 @@ export function requireContext(flags: Flags, cwd = process.cwd()): RoomContext {
   return { sessionId, host, port, token };
 }
 
+/** Operator identity (V6 #1): env var wins, then ~/.meetroom/credentials.json. */
+export function storedOperatorKey(): string | undefined {
+  if (process.env.MEETROOM_OPERATOR_KEY) return process.env.MEETROOM_OPERATOR_KEY;
+  const p = join(process.env.MEETROOM_HOME ?? join(homedir(), ".meetroom"), "credentials.json");
+  if (!existsSync(p)) return undefined;
+  try {
+    return (JSON.parse(readFileSync(p, "utf8")) as { key: string }).key;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function api<T = any>(
   ctx: Pick<RoomContext, "host" | "port" | "token">,
   method: string,
@@ -102,6 +115,8 @@ export async function api<T = any>(
   const url = `http://${ctx.host}:${ctx.port}${path}`;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (ctx.token) headers["x-meetroom-token"] = ctx.token;
+  const opKey = storedOperatorKey();
+  if (opKey) headers["x-meetroom-operator"] = opKey;
   let res: Response;
   try {
     res = await fetch(url, {

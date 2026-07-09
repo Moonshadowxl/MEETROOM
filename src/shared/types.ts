@@ -25,6 +25,7 @@ export type FileClaim = {
   status: "claimed" | "editing" | "done";
   claimedAt: string;
   lastActivityAt: string; // for timeout auto-release
+  timeoutMinutes?: number; // V5 #7 — explicit per-claim override beats learned/default
 };
 
 // V2 #2 — dependency-aware claiming
@@ -330,11 +331,14 @@ export type Epic = {
   createdAt: string;
 };
 
-// V2 #6 — persistent project memory (.meetroom/memory.json, keyed by cwd)
+// V2 #6 — persistent project memory (.meetroom/memory.json, keyed by cwd).
+// V5 #5 upgrades it to a graph: `nodes` supersedes the flat `decisions` list
+// (which is kept for backwards compatibility and auto-migrated on load).
 export type ProjectMemory = {
   projectPath: string;
   decisions: { summary: string; date: string; sourceSessionId: string }[];
   conventions: string[];
+  nodes?: MemoryNode[];
 };
 
 // V3 #5 — agent reputation (persisted across sessions, keyed by identity)

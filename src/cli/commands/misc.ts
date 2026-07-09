@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import type { Plugin, Session } from "../../shared/types.js";
 import { listRoles } from "../../shared/roles.js";
 import { api, fail, requireContext, resolveAgentId, type Parsed, csv } from "../client.js";
+import { resolveSecrets } from "../../daemon/trust.js";
 
 // usage tracking (V2 #10), plugins (V3 #1), notifications (V2 #4 / V3 #11),
 // draft plans (V3 #13), roles, memory & reputation views.
@@ -47,15 +48,19 @@ export async function cmdPlugin(parsed: Parsed): Promise<void> {
 
   if (sub === "install") {
     const command = parsed.flags.command as string;
-    if (!name || !command) fail('usage: meetroom plugin install <name> --command "<shell cmd>" [--project]');
+    if (!name || !command) fail('usage: meetroom plugin install <name> --command "<shell cmd>" [--project] [--permissions read-fs,write-fs,network,secrets] [--description "..."]');
     const agentId = resolveAgentId(parsed.flags);
+    // V7 #2 — permissions manifest: informed consent instead of "anything goes".
+    const permissions = csv(parsed.flags.permissions);
     await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/plugins`, {
       name,
       command,
       installedBy: agentId,
       scope: parsed.flags.project ? "project" : "session",
+      manifest: permissions ? { permissions, description: parsed.flags.description } : undefined,
     });
     console.log(`plugin "${name}" installed (${parsed.flags.project ? "project scope — persists via .meetroom/plugins.json" : "session scope"})`);
+    if (permissions?.some((p) => p !== "read-fs")) console.log(`note: declares [${permissions.join(", ")}] — running it will require --confirm`);
     return;
   }
 
@@ -72,12 +77,22 @@ export async function cmdPlugin(parsed: Parsed): Promise<void> {
     if (!name) fail("usage: meetroom plugin run <name> [args...]");
     const plugin = plugins.find((p: Plugin) => p.name === name);
     if (!plugin) fail(`no plugin "${name}" — see \`meetroom plugin list\``);
+    // V7 #2 — dangerous permissions need explicit acknowledgement to run.
+    const dangerous = plugin!.manifest?.permissions.filter((p) => p !== "read-fs") ?? [];
+    if (dangerous.length && !parsed.flags.confirm) {
+      fail(`plugin "${name}" declares permissions [${dangerous.join(", ")}] — re-run with --confirm to acknowledge`);
+    }
     // Plugins are named shell command templates run locally by whoever invokes
-    // them; {args} is substituted, otherwise args are appended.
-    const cmd = plugin!.command.includes("{args}")
+    // them; {args} is substituted, otherwise args are appended. {secret:NAME}
+    // placeholders resolve at exec time and never enter session state (V6 #5).
+    let cmd = plugin!.command.includes("{args}")
       ? plugin!.command.replaceAll("{args}", args.join(" "))
       : [plugin!.command, ...args].join(" ");
-    console.log(`$ ${cmd}`);
+    try {
+      cmd = resolveSecrets(cmd);
+    } catch (err) {
+      fail((err as Error).message);
+    }
     try {
       execFileSync("sh", ["-c", cmd], { stdio: "inherit" });
     } catch (err) {
@@ -136,17 +151,37 @@ export function cmdRoles(): void {
 }
 
 export async function cmdMemory(parsed: Parsed): Promise<void> {
+  const [sub, nodeId] = parsed.positional;
   const ctx = requireContext(parsed.flags);
+
+  // V5 #6 — promote a project memory node to the user-global store.
+  if (sub === "promote") {
+    if (!nodeId) fail("usage: meetroom memory promote <node-id>");
+    const data = await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/memory/promote`, { nodeId });
+    console.log(`promoted to global memory: ${data.node.summary}`);
+    return;
+  }
+
   const data = await api(ctx, "GET", `/api/sessions/${ctx.sessionId}/memory`);
   const m = data.memory;
   console.log(`project memory for ${m.projectPath} (.meetroom/memory.json — hand-editable)`);
-  if (m.conventions.length) {
-    console.log("\nconventions:");
-    for (const c of m.conventions) console.log(`  - ${c}`);
+  const nodes = m.nodes ?? [];
+  if (!nodes.length) return console.log("\n(no memory yet — recorded at session end)");
+  console.log("");
+  for (const n of nodes) console.log(`  ${n.id} [${n.kind}] ${n.summary} (${n.date.slice(0, 10)}, ${n.sourceSessionId})`);
+  console.log("\npromote one to all your projects with: meetroom memory promote <node-id>");
+}
+
+/** V5 #5 — semantic-ish search over project + global memory. */
+export async function cmdRecall(parsed: Parsed): Promise<void> {
+  const query = parsed.positional.join(" ");
+  if (!query) fail('usage: meetroom recall "<query>"');
+  const ctx = requireContext(parsed.flags);
+  const data = await api(ctx, "GET", `/api/sessions/${ctx.sessionId}/recall?q=${encodeURIComponent(query)}`);
+  if (!data.results.length) return console.log("no matching memory");
+  for (const r of data.results) {
+    console.log(`[${r.node.kind}] ${r.node.summary} (${r.node.date.slice(0, 10)})${r.node.links.files?.length ? ` — files: ${r.node.links.files.join(", ")}` : ""}`);
   }
-  console.log("\ndecisions:");
-  if (!m.decisions.length) console.log("  (none yet — recorded at session end)");
-  for (const d of m.decisions) console.log(`  - ${d.summary} (${d.date.slice(0, 10)}, ${d.sourceSessionId})`);
 }
 
 export async function cmdReputation(parsed: Parsed): Promise<void> {

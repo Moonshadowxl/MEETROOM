@@ -10,7 +10,7 @@ import { loadReputation } from "../src/daemon/reputation.js";
 import type { Agent, Session, Task } from "../src/shared/types.js";
 
 function setup(): { reg: Registry; session: Session; a: Agent; b: Agent } {
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const mk = (name: string, tier?: Agent["costTier"], strengths?: string[]): Agent => ({
     id: `agent-${name}`,

@@ -4,6 +4,8 @@ import type { Registry } from "./registry.js";
 import { claimFile } from "./fileClaims.js";
 import { estimateComplexity, suggestAgent } from "./routing.js";
 import { updateReputationOnTaskDone } from "./reputation.js";
+import { predictConflicts } from "./intelligence.js";
+import { policyViolations } from "./trust.js";
 
 // V2 #1 — task board: agents claim *work*, not just paths. File claims stay
 // the low-level primitive underneath.
@@ -40,6 +42,12 @@ export function createTask(
   // V3 #4 — routing suggestion (advisory only; agents/human still decide).
   task.estimatedComplexity = estimateComplexity(task);
   task.suggestedAgentId = suggestAgent(session, task);
+  // V5 #2 — conflict prediction (also advisory; never blocks creation).
+  const warnings = predictConflicts(session, task);
+  if (warnings.length) {
+    task.conflictWarnings = warnings;
+    reg.notice(session, `task ${task.id}: ${warnings[0]}`);
+  }
   session.tasks.push(task);
   reg.event(session, "task-created", undefined, { taskId: task.id, title: task.title });
   return { ok: true, task };
@@ -123,6 +131,15 @@ export function moveTask(
     const approved = reviews.find((r) => r.status === "approved");
     if (!approved) {
       return { ok: false, error: "task cannot move to done without an approved review" };
+    }
+    // V6 #3 — repo policy can only add requirements, never relax them.
+    const violations = policyViolations(session, task, reg.dataDir);
+    if (violations.length) {
+      return { ok: false, error: `blocked by policy: ${violations.join("; ")}` };
+    }
+    // V8 #7 — outcome verification gates done when the task declares a goal test.
+    if (task.verify && !task.verifyResult?.passed) {
+      return { ok: false, error: "task has a verify command that hasn't passed — run `meetroom verify run <task-id>`" };
     }
     if (session.config.requirePrMergeForDone && approved.prUrl && !prMergedFlag(session, taskId)) {
       return { ok: false, error: "session requires the PR to be merged before done (report with `meetroom ci report` or `meetroom review pr-merged`)" };

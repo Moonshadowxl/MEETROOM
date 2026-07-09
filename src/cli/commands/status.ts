@@ -73,7 +73,14 @@ export async function cmdBoard(parsed: Parsed): Promise<void> {
 
 export async function cmdBrief(parsed: Parsed): Promise<void> {
   const ctx = requireContext(parsed.flags);
-  const data = await api(ctx, "GET", `/api/sessions/${ctx.sessionId}/brief`);
+  // V5 #8 — `brief --since <ts|last>`: the delta, not the world.
+  let since = parsed.flags.since === true ? "last" : (parsed.flags.since as string | undefined);
+  if (since === "last") {
+    const agentId = resolveAgentId(parsed.flags);
+    const state = await api(ctx, "GET", `/api/sessions/${ctx.sessionId}/state`);
+    since = (state.session as Session).agents.find((a) => a.id === agentId)?.lastSeenAt;
+  }
+  const data = await api(ctx, "GET", `/api/sessions/${ctx.sessionId}/brief${since ? `?since=${encodeURIComponent(since)}` : ""}`);
   console.log(data.brief);
 }
 

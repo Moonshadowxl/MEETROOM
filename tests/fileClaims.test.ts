@@ -8,7 +8,7 @@ import { claimFile, releaseFile, sweepClaimTimeouts, touchClaim } from "../src/d
 import type { Agent, Session } from "../src/shared/types.js";
 
 function setup(): { reg: Registry; session: Session; a: Agent; b: Agent } {
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const mk = (name: string): Agent => ({
     id: `agent-${name}`,

@@ -14,7 +14,7 @@ import {
 import type { Agent, Session } from "../src/shared/types.js";
 
 function setup(agentCount: number): { reg: Registry; session: Session; agents: Agent[] } {
-  const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+  const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
   const session = reg.createSession({ type: "mmm", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const agents: Agent[] = [];
   for (let i = 0; i < agentCount; i++) {

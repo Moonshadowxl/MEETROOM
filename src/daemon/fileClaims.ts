@@ -1,6 +1,7 @@
-import type { Session } from "../shared/types.js";
+import type { SemanticClaim, Session } from "../shared/types.js";
 import { now } from "../shared/ids.js";
 import type { Registry } from "./registry.js";
+import { effectiveTimeoutMinutes, recordClaimDuration } from "./intelligence.js";
 
 export type ClaimResult =
   | { ok: true; granted: true }
@@ -16,7 +17,14 @@ function agentName(session: Session, agentId: string): string {
  * agent FIFO instead of hard-rejecting (V2 #2); the claim is auto-granted
  * when the holder releases or times out.
  */
-export function claimFile(reg: Registry, session: Session, agentId: string, filepath: string, wait = false): ClaimResult {
+export function claimFile(
+  reg: Registry,
+  session: Session,
+  agentId: string,
+  filepath: string,
+  wait = false,
+  timeoutMinutes?: number
+): ClaimResult {
   const existing = session.claims.find((c) => c.filepath === filepath);
   if (existing) {
     if (existing.agentId === agentId) {
@@ -46,9 +54,50 @@ export function claimFile(reg: Registry, session: Session, agentId: string, file
       heldBy: existing.agentId,
     };
   }
-  session.claims.push({ filepath, agentId, status: "claimed", claimedAt: now(), lastActivityAt: now() });
+  // A file-level claim also requires no other agent's line-range claims on it (V5 #1).
+  const lineHolder = session.semanticClaims.find((c) => c.filepath === filepath && c.agentId !== agentId);
+  if (lineHolder) {
+    return { ok: false, error: `lines ${lineHolder.startLine}-${lineHolder.endLine} are claimed by ${agentName(session, lineHolder.agentId)} — claim a range or wait`, heldBy: lineHolder.agentId };
+  }
+  session.claims.push({ filepath, agentId, status: "claimed", claimedAt: now(), lastActivityAt: now(), timeoutMinutes });
   reg.event(session, "claim", agentId, { filepath });
   return { ok: true, granted: true };
+}
+
+// ---- V5 #1 — line-range claims: finer than a file, coarser than nothing ------
+
+export function claimLines(
+  reg: Registry,
+  session: Session,
+  agentId: string,
+  filepath: string,
+  startLine: number,
+  endLine: number
+): { ok: boolean; error?: string } {
+  if (!(startLine >= 1 && endLine >= startLine)) return { ok: false, error: "bad line range" };
+  // A whole-file claim by someone else trumps every range (coarse beats fine).
+  const fileClaim = session.claims.find((c) => c.filepath === filepath);
+  if (fileClaim && fileClaim.agentId !== agentId) {
+    return { ok: false, error: `whole file is claimed by ${agentName(session, fileClaim.agentId)}` };
+  }
+  const overlap = session.semanticClaims.find(
+    (c) => c.filepath === filepath && c.agentId !== agentId && c.startLine <= endLine && c.endLine >= startLine
+  );
+  if (overlap) {
+    return { ok: false, error: `lines ${overlap.startLine}-${overlap.endLine} already claimed by ${agentName(session, overlap.agentId)}` };
+  }
+  const claim: SemanticClaim = { filepath, startLine, endLine, agentId, claimedAt: now(), lastActivityAt: now() };
+  session.semanticClaims.push(claim);
+  reg.event(session, "claim-lines", agentId, { filepath, startLine, endLine });
+  return { ok: true };
+}
+
+export function releaseLines(reg: Registry, session: Session, agentId: string, filepath: string): { ok: boolean; error?: string } {
+  const before = session.semanticClaims.length;
+  session.semanticClaims = session.semanticClaims.filter((c) => !(c.filepath === filepath && c.agentId === agentId));
+  if (session.semanticClaims.length === before) return { ok: false, error: "no line claims of yours on that file" };
+  reg.event(session, "release-lines", agentId, { filepath });
+  return { ok: true };
 }
 
 /** Release a claim; hands the file to the next queued agent, if any. */
@@ -58,7 +107,9 @@ export function releaseFile(reg: Registry, session: Session, agentId: string, fi
   if (session.claims[idx].agentId !== agentId) {
     return { ok: false, error: `claim is held by ${agentName(session, session.claims[idx].agentId)}, not you` };
   }
-  session.claims.splice(idx, 1);
+  const [released] = session.claims.splice(idx, 1);
+  // Feed the adaptive-timeout learner (V5 #7) with how long work actually took.
+  recordClaimDuration(reg.dataDir, filepath, (Date.now() - new Date(released.claimedAt).getTime()) / 60_000);
   reg.event(session, "release", agentId, { filepath });
   grantToNextWaiter(reg, session, filepath);
   return { ok: true };
@@ -90,16 +141,26 @@ function grantToNextWaiter(reg: Registry, session: Session, filepath: string): v
  */
 export function sweepClaimTimeouts(reg: Registry, session: Session): void {
   if (session.status !== "active") return;
-  const cutoff = Date.now() - session.config.claimTimeoutMinutes * 60_000;
   for (const claim of [...session.claims]) {
-    if (new Date(claim.lastActivityAt).getTime() < cutoff) {
+    // V5 #7 — per-file learned timeout: explicit override > p90 history > default.
+    const timeout = effectiveTimeoutMinutes(reg.dataDir, session, claim.filepath, claim.timeoutMinutes);
+    if (new Date(claim.lastActivityAt).getTime() < Date.now() - timeout * 60_000) {
       session.claims = session.claims.filter((c) => c !== claim);
-      reg.event(session, "claim-timeout", claim.agentId, { filepath: claim.filepath });
+      reg.event(session, "claim-timeout", claim.agentId, { filepath: claim.filepath, timeoutMinutes: timeout });
       reg.notice(
         session,
-        `claim on ${claim.filepath} by ${agentName(session, claim.agentId)} auto-released after ${session.config.claimTimeoutMinutes}m of inactivity`
+        `claim on ${claim.filepath} by ${agentName(session, claim.agentId)} auto-released after ${timeout}m of inactivity`
       );
       grantToNextWaiter(reg, session, claim.filepath);
+    }
+  }
+  // Line-range claims sweep on the session default (no per-range learning).
+  const rangeCutoff = Date.now() - session.config.claimTimeoutMinutes * 60_000;
+  for (const claim of [...session.semanticClaims]) {
+    if (new Date(claim.lastActivityAt).getTime() < rangeCutoff) {
+      session.semanticClaims = session.semanticClaims.filter((c) => c !== claim);
+      reg.event(session, "claim-lines-timeout", claim.agentId, { filepath: claim.filepath });
+      reg.notice(session, `line claim ${claim.filepath}:${claim.startLine}-${claim.endLine} (${agentName(session, claim.agentId)}) auto-released`);
     }
   }
 }

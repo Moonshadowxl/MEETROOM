@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AttentionItem, ChatMessage, Session, SessionConfig, SessionType } from "../shared/types.js";
 import { entityId, now, sessionId, sessionToken } from "../shared/ids.js";
+import { redactSecrets } from "./trust.js";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -173,7 +174,8 @@ export class Registry extends EventEmitter {
 
   /** Append a chat message (optionally private via msg.to), persist, notify. */
   chat(session: Session, msg: Omit<ChatMessage, "ts">): ChatMessage {
-    const full: ChatMessage = { ...msg, ts: now() };
+    // V6 #5 — pasted secret values never reach disk.
+    const full: ChatMessage = { ...msg, message: redactSecrets(msg.message), ts: now() };
     session.chatLog.push(full);
     this.save(session);
     this.emit("chat", session, full);

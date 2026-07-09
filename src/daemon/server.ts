@@ -5,17 +5,28 @@ import { fileURLToPath } from "node:url";
 import type { Plugin, Session, SessionType } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import { Registry } from "./registry.js";
-import { claimFile, releaseFile, sweepClaimTimeouts, touchClaim } from "./fileClaims.js";
+import { claimFile, claimLines, releaseFile, releaseLines, sweepClaimTimeouts, touchClaim } from "./fileClaims.js";
 import { createProposal, objectToProposal, resolveProposal, sweepProposalTimeouts, voteOnProposal } from "./resolution.js";
 import { claimTask, createTask, moveTask, reportCIStatus, reportTestResult } from "./tasks.js";
 import { commentOnReview, decideReview, submitReview, syncPrStatus } from "./reviews.js";
 import { subscribe, wireBroadcast } from "./broadcast.js";
 import { wireNotifications } from "./notify.js";
-import { generateBrief } from "./brief.js";
+import { generateBrief, generateDeltaBrief } from "./brief.js";
 import { exportSession } from "./exporter.js";
-import { distillSessionIntoMemory, loadMemory } from "./memory.js";
+import { distillSessionIntoMemory, loadMemory, memoryForFile, promoteMemoryNode, recallMemory } from "./memory.js";
 import { loadReputation } from "./reputation.js";
 import { approvePlan, createDraftPlan, discardPlan } from "./plan.js";
+import {
+  inviteOperator,
+  loadOperators,
+  loadPolicy,
+  operatorAllowed,
+  policyViolations,
+  purgeSession,
+  rulesForTask,
+  saveOperators,
+  type OperatorRole,
+} from "./trust.js";
 import {
   agentBudgetBlocked,
   checkBudgets,
@@ -147,6 +158,18 @@ function route(method: string, path: string, handler: Route["handler"], gated = 
 export function buildServer(reg: Registry) {
   wireBroadcast(reg);
   wireNotifications(reg);
+
+  // V6 #1 — privileged actions need an operator key of sufficient role, but
+  // only once operators have been configured (solo mode stays frictionless).
+  const requireOperator = (ctx: Ctx, minRole: OperatorRole): boolean => {
+    const key = ctx.req.headers["x-meetroom-operator"] as string | undefined;
+    const check = operatorAllowed(reg.dataDir, key, minRole);
+    if (!check.ok) {
+      bad(ctx.res, check.error!, 403);
+      return false;
+    }
+    return true;
+  };
 
   const withSession = (ctx: Ctx): Session | undefined => {
     const session = reg.get(ctx.params.id);
@@ -324,11 +347,21 @@ export function buildServer(reg: Registry) {
       (c) => {
         const s = withSession(c);
         if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
-        const { agentId, filepath, wait } = c.body;
+        const { agentId, filepath, wait, lines, timeoutMinutes } = c.body;
         if (!agentId || !filepath) return bad(c.res, "agentId and filepath required");
-        const result = claimFile(reg, s, agentId, filepath, !!wait);
+        // V5 #5 — surface memory about this file at the moment it matters.
+        const relatedMemory = memoryForFile(s.cwd, filepath).map((n) => n.summary);
+        if (lines) {
+          // V5 #1 — line-range claim ("A-B")
+          const m = String(lines).match(/^(\d+)-(\d+)$/);
+          if (!m) return bad(c.res, 'lines must look like "120-180"');
+          const result = claimLines(reg, s, agentId, filepath, Number(m[1]), Number(m[2]));
+          reg.save(s);
+          return json(c.res, result.ok ? 200 : 409, { ...result, granted: result.ok, relatedMemory });
+        }
+        const result = claimFile(reg, s, agentId, filepath, !!wait, timeoutMinutes ? Number(timeoutMinutes) : undefined);
         reg.save(s);
-        json(c.res, result.ok ? 200 : 409, result);
+        json(c.res, result.ok ? 200 : 409, { ...result, relatedMemory });
       },
       true
     ),
@@ -339,12 +372,28 @@ export function buildServer(reg: Registry) {
       (c) => {
         const s = withSession(c);
         if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
-        const result = releaseFile(reg, s, c.body.agentId, c.body.filepath);
+        const result = c.body.lines
+          ? releaseLines(reg, s, c.body.agentId, c.body.filepath)
+          : releaseFile(reg, s, c.body.agentId, c.body.filepath);
         reg.save(s);
         json(c.res, result.ok ? 200 : 409, result);
       },
       true
     ),
+
+    route("GET", "/api/sessions/:id/recall", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const q = c.query.get("q") ?? "";
+      json(c.res, 200, { ok: true, results: recallMemory(s.cwd, q) });
+    }),
+
+    route("POST", "/api/sessions/:id/memory/promote", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const result = promoteMemoryNode(s.cwd, c.body.nodeId);
+      json(c.res, result.ok ? 200 : 404, result);
+    }),
 
     route("POST", "/api/sessions/:id/touch", (c) => {
       const s = withSession(c);
@@ -506,10 +555,10 @@ export function buildServer(reg: Registry) {
     route("POST", "/api/sessions/:id/plugins", (c) => {
       const s = withSession(c);
       if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
-      const { name, command, installedBy, scope } = c.body;
+      const { name, command, installedBy, scope, manifest } = c.body;
       if (!name || !command) return bad(c.res, "name and command required");
       if (s.plugins.some((p) => p.name === name)) return bad(c.res, `plugin "${name}" already installed`, 409);
-      const plugin: Plugin = { id: entityId("plug"), name, command, installedBy: installedBy ?? "human", scope: scope === "project" ? "project" : "session" };
+      const plugin: Plugin = { id: entityId("plug"), name, command, installedBy: installedBy ?? "human", scope: scope === "project" ? "project" : "session", manifest };
       s.plugins.push(plugin);
       if (plugin.scope === "project") {
         const persisted = loadProjectPlugins(s.cwd).filter((p) => p.name !== name);
@@ -522,6 +571,7 @@ export function buildServer(reg: Registry) {
 
     // ---- session lifecycle ---------------------------------------------------
     route("POST", "/api/sessions/:id/pause", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
       const s = withSession(c);
       if (!s) return;
       if (s.status !== "active") return bad(c.res, `session is ${s.status}`, 409);
@@ -532,6 +582,7 @@ export function buildServer(reg: Registry) {
     }),
 
     route("POST", "/api/sessions/:id/resume", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
       const s = withSession(c);
       if (!s) return;
       if (s.status !== "paused") return bad(c.res, `session is ${s.status}`, 409);
@@ -544,6 +595,7 @@ export function buildServer(reg: Registry) {
     }),
 
     route("POST", "/api/sessions/:id/end", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
       const s = withSession(c);
       if (!s) return;
       if (s.status === "ended") return bad(c.res, "session already ended", 409);
@@ -631,6 +683,7 @@ export function buildServer(reg: Registry) {
     }),
 
     route("POST", "/api/sessions/:id/budgets", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
       const s = withSession(c);
       if (!s) return;
       const { scope, agentId, maxCostUsd, maxTokens, onBreach } = c.body;
@@ -689,6 +742,7 @@ export function buildServer(reg: Registry) {
     route("GET", "/api/routines", (c) => json(c.res, 200, { ok: true, routines: loadRoutines(reg.dataDir) })),
 
     route("POST", "/api/routines", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
       const { name, cron, cwd, template, guild } = c.body;
       if (!name || !cron || !cwd) return bad(c.res, "name, cron, and cwd required");
       if (cron.trim().split(/\s+/).length !== 5) return bad(c.res, "cron must have 5 fields (min hour dom mon dow)");
@@ -720,6 +774,7 @@ export function buildServer(reg: Registry) {
     }),
 
     route("POST", "/api/sessions/:id/notify", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
       const s = withSession(c);
       if (!s) return;
       const { url, kind, events } = c.body;
@@ -732,7 +787,9 @@ export function buildServer(reg: Registry) {
 
     route("GET", "/api/sessions/:id/brief", (c) => {
       const s = withSession(c);
-      if (s) json(c.res, 200, { ok: true, brief: generateBrief(s) });
+      if (!s) return;
+      const since = c.query.get("since"); // V5 #8 — delta brief
+      json(c.res, 200, { ok: true, brief: since ? generateDeltaBrief(s, since) : generateBrief(s) });
     }),
 
     route("GET", "/api/sessions/:id/export", (c) => {
@@ -752,6 +809,74 @@ export function buildServer(reg: Registry) {
     route("GET", "/api/sessions/:id/reputation", (c) => {
       const s = withSession(c);
       if (s) json(c.res, 200, { ok: true, reputation: loadReputation(s.cwd) });
+    }),
+
+    // ---- V6: operators / audit / policy / org / purge -----------------------------
+    route("POST", "/api/operators", (c) => {
+      if (!requireOperator(c, "owner")) return;
+      const { name, role } = c.body;
+      if (!name || !["owner", "maintainer", "reviewer", "observer"].includes(role)) {
+        return bad(c.res, "name and role (owner|maintainer|reviewer|observer) required");
+      }
+      const { operator, key } = inviteOperator(reg.dataDir, name, role);
+      json(c.res, 201, { ok: true, operator: { id: operator.id, name: operator.name, role: operator.role }, key });
+    }),
+
+    route("GET", "/api/operators", (c) => {
+      json(c.res, 200, { ok: true, operators: loadOperators(reg.dataDir).map(({ keyHash, ...o }) => o) });
+    }),
+
+    route("DELETE", "/api/operators/:oid", (c) => {
+      if (!requireOperator(c, "owner")) return;
+      const ops = loadOperators(reg.dataDir);
+      const next = ops.filter((o) => o.id !== c.params.oid && o.name !== c.params.oid);
+      if (next.length === ops.length) return bad(c.res, "no such operator", 404);
+      saveOperators(reg.dataDir, next);
+      json(c.res, 200, { ok: true });
+    }),
+
+    route("GET", "/api/sessions/:id/audit", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const broken = Registry.verifyAuditChain(s);
+      json(c.res, 200, { ok: true, intact: broken === -1, brokenIndex: broken === -1 ? undefined : broken, events: s.events.length });
+    }),
+
+    route("GET", "/api/sessions/:id/tasks/:tid/policy", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const task = s.tasks.find((t) => t.id === c.params.tid);
+      if (!task) return bad(c.res, "no such task", 404);
+      const rules = rulesForTask(loadPolicy(s.cwd), task);
+      json(c.res, 200, { ok: true, rules, violations: policyViolations(s, task, reg.dataDir) });
+    }),
+
+    // V6 #7 — the slow questions: cost, throughput, escalations, per project.
+    route("GET", "/api/org/report", (c) => {
+      const projects = new Map<string, { sessions: number; tasksDone: number; escalations: number; costUsd: number; tokens: number }>();
+      for (const s of reg.sessions.values()) {
+        const p = projects.get(s.cwd) ?? { sessions: 0, tasksDone: 0, escalations: 0, costUsd: 0, tokens: 0 };
+        p.sessions++;
+        p.tasksDone += s.tasks.filter((t) => t.status === "done").length;
+        p.escalations += s.proposals.filter((x) => x.status === "escalated").length;
+        for (const u of s.usage) {
+          p.costUsd += u.costUsd;
+          p.tokens += u.tokensIn + u.tokensOut;
+        }
+        projects.set(s.cwd, p);
+      }
+      json(c.res, 200, { ok: true, projects: [...projects.entries()].map(([cwd, stats]) => ({ cwd, ...stats })) });
+    }),
+
+    // V6 #8 — keep the record, drop the payloads.
+    route("POST", "/api/sessions/:id/purge", (c) => {
+      if (!requireOperator(c, "owner")) return;
+      const s = withSession(c);
+      if (!s) return;
+      if (s.status !== "ended") return bad(c.res, "only ended sessions can be purged (run `meetroom end` first)", 409);
+      const reportPath = purgeSession(s, reg.dataDir, exportSession(s, "md"));
+      reg.event(s, "session-purged", undefined, { reportPath });
+      json(c.res, 200, { ok: true, reportPath });
     }),
   ];
 
@@ -858,20 +983,35 @@ export function daemonInfoPath(): string {
   return join(PKG_ROOT, "data", "daemon.json");
 }
 
-// Entry point: `node dist/src/daemon/server.js [--port N] [--bind HOST]`
+// Entry point: `node dist/src/daemon/server.js [--port N] [--bind HOST] [--tls-cert F --tls-key F]`
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isMain) {
   const args = process.argv.slice(2);
-  const portIdx = args.indexOf("--port");
-  const bindIdx = args.indexOf("--bind");
-  const port = portIdx >= 0 ? Number(args[portIdx + 1]) : Number(process.env.MEETROOM_PORT ?? DEFAULT_PORT);
+  const argOf = (name: string) => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+  const port = Number(argOf("--port") ?? process.env.MEETROOM_PORT ?? DEFAULT_PORT);
   // Localhost-only by default; `meetroom start --remote` binds all interfaces (V2 #4).
-  const bind = bindIdx >= 0 ? args[bindIdx + 1] : process.env.MEETROOM_BIND ?? "127.0.0.1";
+  const bind = argOf("--bind") ?? process.env.MEETROOM_BIND ?? "127.0.0.1";
+  const certPath = argOf("--tls-cert") ?? process.env.MEETROOM_TLS_CERT;
+  const keyPath = argOf("--tls-key") ?? process.env.MEETROOM_TLS_KEY;
   const reg = new Registry();
-  const server = buildServer(reg);
+  const httpServer = buildServer(reg);
+  let server: import("node:net").Server = httpServer;
+  let scheme = "http";
+  if (certPath && keyPath) {
+    // V6 #2 — TLS for remote rooms; the plain-HTTP localhost path pays no ceremony.
+    const { createServer: createHttps } = await import("node:https");
+    server = createHttps(
+      { cert: readFileSync(certPath), key: readFileSync(keyPath) },
+      httpServer.listeners("request")[0] as (req: IncomingMessage, res: ServerResponse) => void
+    );
+    scheme = "https";
+  }
   server.listen(port, bind, () => {
     mkdirSync(dirname(daemonInfoPath()), { recursive: true });
-    writeFileSync(daemonInfoPath(), JSON.stringify({ port, bind, pid: process.pid, startedAt: now() }, null, 2));
-    console.log(`meetroom daemon listening on http://${bind}:${port}`);
+    writeFileSync(daemonInfoPath(), JSON.stringify({ port, bind, scheme, pid: process.pid, startedAt: now() }, null, 2));
+    console.log(`meetroom daemon listening on ${scheme}://${bind}:${port}`);
   });
 }

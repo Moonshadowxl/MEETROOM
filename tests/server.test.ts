@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { Registry } from "../src/daemon/registry.js";
 import { buildServer } from "../src/daemon/server.js";
 
-const reg = new Registry(mkdtempSync(join(tmpdir(), "meetroom-test-")));
+const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
 const server = buildServer(reg);
 await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const port = (server.address() as AddressInfo).port;

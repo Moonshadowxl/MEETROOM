@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import type { Session, Task } from "../../shared/types.js";
 import { api, fail, requireContext, resolveAgentId, type Parsed } from "../client.js";
+import { resolveSecrets } from "../../daemon/trust.js";
 
 // V2 #3 — review gate CLI. `submit` auto-generates the diff via git against
 // the task's claimed files; `--pr` (V3 #2) pushes the branch and opens a real
@@ -127,7 +128,7 @@ function openPr(sessionId: string, taskId: string, title: string): string {
   }
   const template = process.env.MEETROOM_PR_CMD;
   const cmds = template
-    ? [template.replaceAll("{branch}", branch).replaceAll("{title}", title)]
+    ? [resolveSecrets(template.replaceAll("{branch}", branch).replaceAll("{title}", title))]
     : [
         `gh pr create --head ${branch} --title ${JSON.stringify(`[meetroom] ${title}`)} --body "Automated meetroom review PR for task ${taskId}"`,
         `glab mr create --source-branch ${branch} --title ${JSON.stringify(`[meetroom] ${title}`)} --description "Automated meetroom review MR for task ${taskId}" -y`,

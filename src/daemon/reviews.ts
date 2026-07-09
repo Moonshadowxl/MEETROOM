@@ -1,6 +1,7 @@
 import type { Review, Session } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import type { Registry } from "./registry.js";
+import { runReviewCopilot } from "./intelligence.js";
 
 // V2 #3 — diff-based review gate. A task can't reach `done` without an
 // approved review, and agents can never review their own diffs.
@@ -32,6 +33,7 @@ export function submitReview(
     updatedAt: now(),
   };
   session.reviews.push(review);
+  runReviewCopilot(reg, session, review); // V5 #3 — first-pass triage (no-op without MEETROOM_REVIEWER)
   reg.event(session, "review-requested", opts.authorAgentId, {
     reviewId: review.id,
     taskId: opts.taskId,
