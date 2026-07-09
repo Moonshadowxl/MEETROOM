@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ChatMessage, Session, SessionConfig, SessionType } from "../shared/types.js";
-import { now, sessionId, sessionToken } from "../shared/ids.js";
+import type { AttentionItem, ChatMessage, Session, SessionConfig, SessionType } from "../shared/types.js";
+import { entityId, now, sessionId, sessionToken } from "../shared/ids.js";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -15,6 +16,7 @@ export const DEFAULT_CONFIG: SessionConfig = {
   claimTimeoutMinutes: 10,
   objectionTimeoutMinutes: 5,
   requirePrMergeForDone: false,
+  stallMinutes: 15,
 };
 
 /**
@@ -25,7 +27,7 @@ export const DEFAULT_CONFIG: SessionConfig = {
  */
 export class Registry extends EventEmitter {
   readonly sessions = new Map<string, Session>();
-  private readonly dataDir: string;
+  readonly dataDir: string;
 
   constructor(dataDir = defaultDataDir()) {
     super();
@@ -39,6 +41,15 @@ export class Registry extends EventEmitter {
       if (!f.endsWith(".json")) continue;
       try {
         const session = JSON.parse(readFileSync(join(this.dataDir, f), "utf8")) as Session;
+        // Migrate sessions persisted by older versions: fill fields added since.
+        session.runners ??= [];
+        session.budgets ??= [];
+        session.artifacts ??= [];
+        session.semanticClaims ??= [];
+        session.integrations ??= [];
+        session.config.stallMinutes ??= DEFAULT_CONFIG.stallMinutes;
+        // Runner processes don't survive a daemon restart.
+        for (const r of session.runners) if (r.state === "running" || r.state === "restarting") r.state = "stopped";
         this.sessions.set(session.id, session);
       } catch {
         // Corrupt session file: skip rather than crash the daemon.
@@ -82,7 +93,12 @@ export class Registry extends EventEmitter {
       events: [],
       usage: [],
       draftPlans: [],
-      notify: { webhooks: [], events: ["escalation", "review-requested", "session-ended", "ci-failed"] },
+      runners: [],
+      budgets: [],
+      artifacts: [],
+      semanticClaims: [],
+      integrations: [],
+      notify: { webhooks: [], events: ["escalation", "review-requested", "session-ended", "ci-failed", "budget-breached"] },
       config: { ...DEFAULT_CONFIG, ...opts.config },
       remote: opts.remote ?? false,
       token: opts.remote ? sessionToken() : undefined,
@@ -96,12 +112,63 @@ export class Registry extends EventEmitter {
     return session;
   }
 
-  /** Append a timeline event, persist, and notify listeners. */
+  /**
+   * Append a timeline event, persist, and notify listeners. Each event is
+   * hash-chained to the previous one (V6 #4) so `meetroom audit verify` can
+   * detect any after-the-fact edit to the record.
+   */
   event(session: Session, type: string, agentId?: string, data?: Record<string, unknown>): void {
-    const ev = { ts: now(), type, agentId, data };
+    const prevHash = session.events.length ? session.events[session.events.length - 1].hash ?? "" : "genesis";
+    const ev: Session["events"][number] = { ts: now(), type, agentId, data };
+    ev.hash = createHash("sha256").update(prevHash + JSON.stringify([ev.ts, ev.type, ev.agentId ?? "", ev.data ?? {}])).digest("hex");
     session.events.push(ev);
     this.save(session);
     this.emit("event", session, ev);
+  }
+
+  /** Walk the event hash chain; returns the index of the first broken link, or -1. */
+  static verifyAuditChain(session: Session): number {
+    let prevHash = "genesis";
+    for (let i = 0; i < session.events.length; i++) {
+      const ev = session.events[i];
+      const expected = createHash("sha256")
+        .update(prevHash + JSON.stringify([ev.ts, ev.type, ev.agentId ?? "", ev.data ?? {}]))
+        .digest("hex");
+      if (ev.hash !== expected) return i;
+      prevHash = ev.hash;
+    }
+    return -1;
+  }
+
+  // ---- attention queue (V4 #5): one cross-session inbox for the human -------
+
+  private attentionPath(): string {
+    return join(this.dataDir, "..", "attention.json");
+  }
+
+  listAttention(): AttentionItem[] {
+    if (!existsSync(this.attentionPath())) return [];
+    try {
+      return JSON.parse(readFileSync(this.attentionPath(), "utf8")) as AttentionItem[];
+    } catch {
+      return [];
+    }
+  }
+
+  saveAttention(items: AttentionItem[]): void {
+    writeFileSync(this.attentionPath(), JSON.stringify(items, null, 2));
+  }
+
+  addAttention(sessionId: string, kind: AttentionItem["kind"], summary: string): AttentionItem {
+    const items = this.listAttention();
+    // Dedup: an identical open item shouldn't pile up on every sweep.
+    const existing = items.find((i) => i.sessionId === sessionId && i.kind === kind && i.summary === summary && i.status === "open");
+    if (existing) return existing;
+    const item: AttentionItem = { id: entityId("attn"), sessionId, kind, summary, createdAt: now(), status: "open" };
+    items.push(item);
+    this.saveAttention(items);
+    this.emit("attention", item);
+    return item;
   }
 
   /** Append a chat message (optionally private via msg.to), persist, notify. */

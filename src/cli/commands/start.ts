@@ -74,6 +74,7 @@ export async function cmdStart(parsed: Parsed): Promise<void> {
     guild: guildName,
     baseCommit: gitHead(cwd),
     roster,
+    template: flags.template, // V4 #8 — session blueprint
   });
 
   const sessionId: string = data.session.id;

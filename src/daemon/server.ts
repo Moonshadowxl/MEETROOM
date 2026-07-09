@@ -16,6 +16,23 @@ import { exportSession } from "./exporter.js";
 import { distillSessionIntoMemory, loadMemory } from "./memory.js";
 import { loadReputation } from "./reputation.js";
 import { approvePlan, createDraftPlan, discardPlan } from "./plan.js";
+import {
+  agentBudgetBlocked,
+  checkBudgets,
+  cronMatches,
+  heartbeat,
+  loadRoutines,
+  loadTemplate,
+  runnerLogPath,
+  saveRoutines,
+  setBudget,
+  spawnRunner,
+  stopAllRunners,
+  stopRunner,
+  sweepEscalations,
+  sweepLiveness,
+  writeArtifact,
+} from "./ops.js";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const DEFAULT_PORT = 7433;
@@ -63,13 +80,18 @@ function authorized(req: IncomingMessage, session: Session): boolean {
 
 // Mutations that represent *work* are gated while a room is paused (V2 #7).
 // Chat, join, and status stay available so agents can see the paused state.
-function ensureWritable(session: Session, res: ServerResponse): boolean {
+function ensureWritable(session: Session, res: ServerResponse, agentId?: string): boolean {
   if (session.status === "paused") {
     bad(res, "room paused — no new claims or task moves until `meetroom resume`", 409);
     return false;
   }
   if (session.status === "ended") {
     bad(res, "session has ended", 410);
+    return false;
+  }
+  // V4 #2 — an agent past its budget cap can talk but not take new work.
+  if (agentId && agentBudgetBlocked(session, agentId)) {
+    bad(res, "your budget is exhausted — a human must raise it (`meetroom budget set`) before you take new work", 402);
     return false;
   }
   return true;
@@ -156,10 +178,33 @@ export function buildServer(reg: Registry) {
     }),
 
     route("POST", "/api/sessions", (c) => {
-      const { type, cwd, remote, config, guild, baseCommit, roster } = c.body;
+      const { type, cwd, remote, config, guild, baseCommit, template } = c.body;
+      let { roster } = c.body;
       if (!["mmm", "sxx", "sxl"].includes(type)) return bad(c.res, "type must be one of mmm|sxx|sxl");
       if (!cwd) return bad(c.res, "cwd required");
-      const session = reg.createSession({ type: type as SessionType, cwd, remote, config, guild, baseCommit });
+      // V4 #8 — templates bundle config + roster + budgets + notify + a draft plan.
+      let tpl;
+      if (template) {
+        tpl = loadTemplate(cwd, template);
+        if (!tpl) return bad(c.res, `no template "${template}" in .meetroom/templates/ or ~/.meetroom/templates/`, 404);
+      }
+      const session = reg.createSession({
+        type: type as SessionType,
+        cwd,
+        remote,
+        config: { ...tpl?.config, ...config },
+        guild: guild ?? tpl?.name,
+        baseCommit,
+      });
+      roster = roster ?? tpl?.roster;
+      if (tpl?.budgets) for (const b of tpl.budgets) setBudget(reg, session, b);
+      if (tpl?.notify) session.notify = structuredClone(tpl.notify);
+      if (tpl?.planDescription) createDraftPlan(reg, session, tpl.planDescription);
+      if (tpl?.runners) {
+        for (const r of tpl.runners) {
+          spawnRunner(reg, session, reg.dataDir, { agentName: r.agentName, command: r.command, restartPolicy: r.restartPolicy });
+        }
+      }
       session.plugins.push(...loadProjectPlugins(cwd)); // project-scope plugins persist across sessions (V3 #1)
       // V3 #10 — guild roster pre-populates profiles; members flip to active
       // when they actually join.
@@ -278,7 +323,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/claim",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const { agentId, filepath, wait } = c.body;
         if (!agentId || !filepath) return bad(c.res, "agentId and filepath required");
         const result = claimFile(reg, s, agentId, filepath, !!wait);
@@ -293,7 +338,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/release",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = releaseFile(reg, s, c.body.agentId, c.body.filepath);
         reg.save(s);
         json(c.res, result.ok ? 200 : 409, result);
@@ -315,7 +360,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/propose",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const { agentId, content } = c.body;
         if (!agentId || !content) return bad(c.res, "agentId and content required");
         const proposal = createProposal(reg, s, agentId, content);
@@ -329,7 +374,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/proposals/:pid/object",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = objectToProposal(reg, s, c.params.pid, c.body.agentId, c.body.reason ?? "");
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -341,7 +386,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/proposals/:pid/resolve",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = resolveProposal(reg, s, c.params.pid, c.body.agentId, c.body.response);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -353,7 +398,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/proposals/:pid/vote",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = voteOnProposal(reg, s, c.params.pid, c.body.agentId, c.body.vote);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -366,7 +411,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/tasks",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const { title, description, files, dependsOn, requiresCI, requiresTests } = c.body;
         if (!title) return bad(c.res, "title required");
         const result = createTask(reg, s, { title, description, files, dependsOn, requiresCI, requiresTests });
@@ -380,7 +425,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/tasks/:tid/claim",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = claimTask(reg, s, c.params.tid, c.body.agentId);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -392,7 +437,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/tasks/:tid/move",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = moveTask(reg, s, c.params.tid, c.body.status, c.body.agentId);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -401,7 +446,7 @@ export function buildServer(reg: Registry) {
 
     route("POST", "/api/sessions/:id/tasks/:tid/tests", (c) => {
       const s = withSession(c);
-      if (!s || !ensureWritable(s, c.res)) return;
+      if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
       const result = reportTestResult(reg, s, c.params.tid, c.body.result, c.body.agentId);
       json(c.res, result.ok ? 200 : 404, result);
     }),
@@ -420,7 +465,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/reviews",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const { taskId, authorAgentId, diff, authorConfidence, prUrl } = c.body;
         if (!taskId || !authorAgentId) return bad(c.res, "taskId and authorAgentId required");
         const result = submitReview(reg, s, { taskId, authorAgentId, diff: diff ?? "", authorConfidence, prUrl });
@@ -434,7 +479,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/reviews/:rid/decide",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = decideReview(reg, s, c.params.rid, c.body.agentId, c.body.decision, c.body.comment);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -460,7 +505,7 @@ export function buildServer(reg: Registry) {
     // ---- plugins (V3 #1) ---------------------------------------------------
     route("POST", "/api/sessions/:id/plugins", (c) => {
       const s = withSession(c);
-      if (!s || !ensureWritable(s, c.res)) return;
+      if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
       const { name, command, installedBy, scope } = c.body;
       if (!name || !command) return bad(c.res, "name and command required");
       if (s.plugins.some((p) => p.name === name)) return bad(c.res, `plugin "${name}" already installed`, 409);
@@ -502,6 +547,7 @@ export function buildServer(reg: Registry) {
       const s = withSession(c);
       if (!s) return;
       if (s.status === "ended") return bad(c.res, "session already ended", 409);
+      stopAllRunners(reg, s); // V4 #1 — no orphaned agent processes
       s.status = "ended";
       const memory = distillSessionIntoMemory(s); // V2 #6
       reg.event(s, "session-ended", undefined, { decisions: memory.decisions.length });
@@ -530,7 +576,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/plan",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         if (!c.body.description) return bad(c.res, "description required");
         const plan = createDraftPlan(reg, s, c.body.description);
         json(c.res, 201, { ok: true, plan });
@@ -543,7 +589,7 @@ export function buildServer(reg: Registry) {
       "/api/sessions/:id/plan/:pid/approve",
       (c) => {
         const s = withSession(c);
-        if (!s || !ensureWritable(s, c.res)) return;
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = approvePlan(reg, s, c.params.pid);
         json(c.res, result.ok ? 200 : 409, result);
       },
@@ -557,6 +603,110 @@ export function buildServer(reg: Registry) {
       json(c.res, result.ok ? 200 : 404, result);
     }),
 
+    // ---- V4: runners / budgets / artifacts / attention ---------------------------
+    route("POST", "/api/sessions/:id/runners", (c) => {
+      const s = withSession(c);
+      if (!s || !ensureWritable(s, c.res)) return;
+      const { agentName, command, cwd, restartPolicy, maxRestarts } = c.body;
+      if (!agentName || !command) return bad(c.res, "agentName and command required");
+      const result = spawnRunner(reg, s, reg.dataDir, { agentName, command, cwd, restartPolicy, maxRestarts });
+      reg.save(s);
+      json(c.res, result.ok ? 201 : 409, result);
+    }),
+
+    route("POST", "/api/sessions/:id/runners/:name/stop", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const result = stopRunner(reg, s, c.params.name);
+      reg.save(s);
+      json(c.res, result.ok ? 200 : 404, result);
+    }),
+
+    route("GET", "/api/sessions/:id/runners/:name/logs", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const p = runnerLogPath(reg.dataDir, s.id, c.params.name);
+      c.res.writeHead(200, { "content-type": "text/plain" });
+      c.res.end(existsSync(p) ? readFileSync(p) : "(no logs yet)");
+    }),
+
+    route("POST", "/api/sessions/:id/budgets", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const { scope, agentId, maxCostUsd, maxTokens, onBreach } = c.body;
+      if (scope !== "session" && scope !== "agent") return bad(c.res, "scope must be session|agent");
+      if (scope === "agent" && !agentId) return bad(c.res, "agentId required for agent-scope budgets");
+      const budget = setBudget(reg, s, {
+        scope,
+        agentId,
+        maxCostUsd: maxCostUsd !== undefined ? Number(maxCostUsd) : undefined,
+        maxTokens: maxTokens !== undefined ? Number(maxTokens) : undefined,
+        onBreach: ["pause-agent", "pause-room", "notify-only"].includes(onBreach) ? onBreach : "notify-only",
+      });
+      reg.save(s);
+      json(c.res, 201, { ok: true, budget });
+    }),
+
+    route("POST", "/api/sessions/:id/artifacts", (c) => {
+      const s = withSession(c);
+      if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+      const { name, content, agentId, expectedVersion } = c.body;
+      if (!name || content === undefined) return bad(c.res, "name and content required");
+      const result = writeArtifact(reg, s, { name, content, agentId: agentId ?? "human", expectedVersion });
+      reg.save(s);
+      json(c.res, result.ok ? 200 : 409, result);
+    }),
+
+    route("GET", "/api/sessions/:id/artifacts", (c) => {
+      const s = withSession(c);
+      if (!s) return;
+      const name = c.query.get("name");
+      if (name) {
+        const artifact = s.artifacts.find((a) => a.name === name);
+        if (!artifact) return bad(c.res, "no such artifact", 404);
+        return json(c.res, 200, { ok: true, artifact });
+      }
+      json(c.res, 200, { ok: true, artifacts: s.artifacts.map(({ content, ...meta }) => meta) });
+    }),
+
+    route("GET", "/api/attention", (c) => {
+      json(c.res, 200, { ok: true, items: reg.listAttention().filter((i) => i.status === "open" || (i.status === "snoozed" && (!i.snoozeUntil || i.snoozeUntil < new Date().toISOString()))) });
+    }),
+
+    route("POST", "/api/attention/:aid", (c) => {
+      const items = reg.listAttention();
+      const item = items.find((i) => i.id === c.params.aid);
+      if (!item) return bad(c.res, "no such attention item", 404);
+      const { status, snoozeUntil } = c.body;
+      if (!["acked", "done", "snoozed", "open"].includes(status)) return bad(c.res, "status must be acked|done|snoozed|open");
+      item.status = status;
+      item.snoozeUntil = status === "snoozed" ? snoozeUntil : undefined;
+      reg.saveAttention(items);
+      json(c.res, 200, { ok: true, item });
+    }),
+
+    // ---- V4 #3: routines (daemon-global) -----------------------------------------
+    route("GET", "/api/routines", (c) => json(c.res, 200, { ok: true, routines: loadRoutines(reg.dataDir) })),
+
+    route("POST", "/api/routines", (c) => {
+      const { name, cron, cwd, template, guild } = c.body;
+      if (!name || !cron || !cwd) return bad(c.res, "name, cron, and cwd required");
+      if (cron.trim().split(/\s+/).length !== 5) return bad(c.res, "cron must have 5 fields (min hour dom mon dow)");
+      const routines = loadRoutines(reg.dataDir);
+      const routine = { id: entityId("rout"), name, cron, cwd, template, guild, enabled: true };
+      routines.push(routine);
+      saveRoutines(reg.dataDir, routines);
+      json(c.res, 201, { ok: true, routine });
+    }),
+
+    route("DELETE", "/api/routines/:rid", (c) => {
+      const routines = loadRoutines(reg.dataDir);
+      const next = routines.filter((r) => r.id !== c.params.rid);
+      if (next.length === routines.length) return bad(c.res, "no such routine", 404);
+      saveRoutines(reg.dataDir, next);
+      json(c.res, 200, { ok: true });
+    }),
+
     // ---- misc -------------------------------------------------------------------
     route("POST", "/api/sessions/:id/usage", (c) => {
       const s = withSession(c);
@@ -564,6 +714,7 @@ export function buildServer(reg: Registry) {
       const { agentId, tokensIn, tokensOut, costUsd } = c.body;
       if (!agentId) return bad(c.res, "agentId required");
       s.usage.push({ agentId, tokensIn: Number(tokensIn) || 0, tokensOut: Number(tokensOut) || 0, costUsd: Number(costUsd) || 0 });
+      checkBudgets(reg, s); // V4 #2 — guardrails fire the moment spend is reported
       reg.save(s);
       json(c.res, 200, { ok: true });
     }),
@@ -630,6 +781,11 @@ export function buildServer(reg: Registry) {
         const params: Record<string, string> = {};
         r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
         const body = req.method === "GET" ? {} : await readBody(req);
+        // V4 #4 — every authenticated agent call doubles as a liveness heartbeat.
+        if (params.id && body?.agentId) {
+          const s = reg.get(params.id);
+          if (s) heartbeat(s, body.agentId);
+        }
         await r.handler({ req, res, reg, body, params, query: url.searchParams });
         return;
       }
@@ -639,14 +795,50 @@ export function buildServer(reg: Registry) {
     }
   });
 
-  // V1 rule 2 + rule 3 timers: claim timeouts and proposal auto-resolution.
+  // V1 rule 2 + rule 3 timers, V4 liveness/escalation sweeps.
   const sweeper = setInterval(() => {
     for (const session of reg.sessions.values()) {
       sweepClaimTimeouts(reg, session);
       sweepProposalTimeouts(reg, session);
+      sweepLiveness(reg, session);
+      sweepEscalations(reg, session);
     }
   }, 30_000);
   sweeper.unref();
+
+  // V4 #3 — routine scheduler: fire cron-matched routines once per minute.
+  let lastCronMinute = "";
+  const cronTimer = setInterval(() => {
+    const nowDate = new Date();
+    const minuteKey = nowDate.toISOString().slice(0, 16);
+    if (minuteKey === lastCronMinute) return;
+    lastCronMinute = minuteKey;
+    const routines = loadRoutines(reg.dataDir);
+    let dirty = false;
+    for (const routine of routines) {
+      if (!routine.enabled || !cronMatches(routine.cron, nowDate)) continue;
+      if (routine.lastFiredAt?.slice(0, 16) === minuteKey) continue;
+      routine.lastFiredAt = nowDate.toISOString();
+      dirty = true;
+      try {
+        const tpl = routine.template ? loadTemplate(routine.cwd, routine.template) : undefined;
+        if (routine.template && !tpl) throw new Error(`template "${routine.template}" not found`);
+        const session = reg.createSession({ type: "sxl", cwd: routine.cwd, config: tpl?.config, guild: routine.guild ?? tpl?.name });
+        if (tpl?.budgets) for (const b of tpl.budgets) setBudget(reg, session, b);
+        if (tpl?.notify) session.notify = structuredClone(tpl.notify);
+        if (tpl?.planDescription) createDraftPlan(reg, session, tpl.planDescription);
+        if (tpl?.runners) {
+          for (const r of tpl.runners) spawnRunner(reg, session, reg.dataDir, { agentName: r.agentName, command: r.command, restartPolicy: r.restartPolicy });
+        }
+        reg.notice(session, `session created by routine "${routine.name}" (${routine.cron})`);
+        reg.save(session);
+      } catch (err) {
+        reg.addAttention("(routine)", "routine-failed", `routine "${routine.name}" failed: ${(err as Error).message}`);
+      }
+    }
+    if (dirty) saveRoutines(reg.dataDir, routines);
+  }, 20_000);
+  cronTimer.unref();
 
   return server;
 }

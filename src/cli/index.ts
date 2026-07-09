@@ -31,6 +31,7 @@ import {
   cmdLeave,
 } from "./commands/misc.js";
 import { cmdGuild } from "./commands/guild.js";
+import { cmdAgent, cmdArtifact, cmdAttention, cmdBudget, cmdRoutine, cmdTemplate } from "./commands/ops.js";
 import { readLock, DEFAULT_PORT } from "./client.js";
 
 const LOGO = String.raw`
@@ -200,6 +201,18 @@ async function main(): Promise<void> {
       return cmdReputation(parsed);
     case "roles":
       return cmdRoles();
+    case "agent":
+      return cmdAgent(parsed);
+    case "budget":
+      return cmdBudget(parsed);
+    case "attention":
+      return cmdAttention(parsed);
+    case "artifact":
+      return cmdArtifact(parsed);
+    case "routine":
+      return cmdRoutine(parsed);
+    case "template":
+      return cmdTemplate(parsed);
     default:
       console.error(`meetroom: unknown command "${command}" — run \`meetroom help\``);
       process.exit(1);
