@@ -1,0 +1,22 @@
+{
+  "name": "meetroom",
+  "version": "3.0.0",
+  "description": "Local multi-agent coordination tool: any CLI coding agent can join a shared room, claim files and tasks, review diffs, and work without collisions.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "meetroom": "bin/meetroom"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "daemon": "npm run build && node dist/src/daemon/server.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^22.0.0"
+  }
+}

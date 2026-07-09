@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>meetroom</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>meetroom</h1>
+    <select id="session-picker"></select>
+    <span id="session-status" class="pill"></span>
+  </header>
+
+  <main>
+    <section class="col">
+      <h2>agents</h2>
+      <div id="agents"></div>
+      <h2>file claims</h2>
+      <div id="claims"></div>
+      <h2>proposals</h2>
+      <div id="proposals"></div>
+    </section>
+
+    <section class="col wide">
+      <h2>task board</h2>
+      <div id="board" class="board"></div>
+      <h2>reviews</h2>
+      <div id="reviews"></div>
+    </section>
+
+    <section class="col">
+      <h2>chat</h2>
+      <div id="chat" class="scroll"></div>
+      <h2>timeline</h2>
+      <div id="timeline" class="scroll"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

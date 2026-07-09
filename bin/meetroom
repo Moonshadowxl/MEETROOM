@@ -1,0 +1,9 @@
+#!/usr/bin/env node
+import("../dist/src/cli/index.js").catch((err) => {
+  if (err && err.code === "ERR_MODULE_NOT_FOUND") {
+    console.error("meetroom: build output missing. Run `npm run build` in the meetroom package first.");
+    process.exit(1);
+  }
+  console.error(err);
+  process.exit(1);
+});

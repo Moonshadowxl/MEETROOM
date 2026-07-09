@@ -1,0 +1,206 @@
+import type { Session, Task, TaskStatus } from "../shared/types.js";
+import { entityId, now } from "../shared/ids.js";
+import type { Registry } from "./registry.js";
+import { claimFile } from "./fileClaims.js";
+import { estimateComplexity, suggestAgent } from "./routing.js";
+import { updateReputationOnTaskDone } from "./reputation.js";
+
+// V2 #1 — task board: agents claim *work*, not just paths. File claims stay
+// the low-level primitive underneath.
+
+const VALID_STATUSES: TaskStatus[] = ["todo", "in-progress", "review", "done", "blocked"];
+
+export function createTask(
+  reg: Registry,
+  session: Session,
+  opts: {
+    title: string;
+    description?: string;
+    files?: string[];
+    dependsOn?: string[];
+    requiresCI?: boolean;
+    requiresTests?: boolean;
+  }
+): { ok: true; task: Task } | { ok: false; error: string } {
+  for (const dep of opts.dependsOn ?? []) {
+    if (!session.tasks.some((t) => t.id === dep)) return { ok: false, error: `unknown dependency task ${dep}` };
+  }
+  const task: Task = {
+    id: entityId("task"),
+    title: opts.title,
+    description: opts.description ?? "",
+    status: "todo",
+    files: opts.files ?? [],
+    dependsOn: opts.dependsOn,
+    requiresCI: opts.requiresCI,
+    requiresTests: opts.requiresTests,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  // V3 #4 — routing suggestion (advisory only; agents/human still decide).
+  task.estimatedComplexity = estimateComplexity(task);
+  task.suggestedAgentId = suggestAgent(session, task);
+  session.tasks.push(task);
+  reg.event(session, "task-created", undefined, { taskId: task.id, title: task.title });
+  return { ok: true, task };
+}
+
+/** Assign an agent to a task and auto-claim its listed files (V2 #1). */
+export function claimTask(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  agentId: string
+): { ok: boolean; error?: string; queuedFiles?: string[] } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  if (task.assignedAgentId && task.assignedAgentId !== agentId) {
+    return { ok: false, error: `task already assigned to ${task.assignedAgentId}` };
+  }
+  const queuedFiles: string[] = [];
+  for (const f of task.files) {
+    const res = claimFile(reg, session, agentId, f, true);
+    if (res.ok && !res.granted) queuedFiles.push(f);
+  }
+  task.assignedAgentId = agentId;
+  task.claimedAt = now();
+  task.updatedAt = now();
+  reg.event(session, "task-claimed", agentId, { taskId });
+  return { ok: true, queuedFiles: queuedFiles.length ? queuedFiles : undefined };
+}
+
+export function unmetDependencies(session: Session, task: Task): string[] {
+  return (task.dependsOn ?? []).filter((dep) => session.tasks.find((t) => t.id === dep)?.status !== "done");
+}
+
+/**
+ * Move a task through the board, enforcing the gates:
+ *  - in-progress requires all dependsOn tasks done (else → blocked, V2 #1)
+ *  - review requires a submitted diff, and a passed test result when
+ *    requiresTests is set (V3 #7)
+ *  - done requires an approved review (V2 #3) and passing CI when
+ *    requiresCI is set (V3 #3)
+ */
+export function moveTask(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  status: TaskStatus,
+  agentId?: string
+): { ok: boolean; status?: TaskStatus; error?: string } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  if (!VALID_STATUSES.includes(status)) return { ok: false, error: `invalid status "${status}"` };
+
+  if (status === "in-progress") {
+    const unmet = unmetDependencies(session, task);
+    if (unmet.length > 0) {
+      task.status = "blocked";
+      task.updatedAt = now();
+      reg.event(session, "task-blocked", agentId, { taskId, unmet });
+      reg.notice(session, `task ${task.id} ("${task.title}") is blocked on: ${unmet.join(", ")}`);
+      return { ok: true, status: "blocked" };
+    }
+  }
+
+  if (status === "review") {
+    if (!session.reviews.some((r) => r.taskId === taskId)) {
+      return { ok: false, error: "moving to review requires a submitted diff — run `meetroom review submit <task-id>` first" };
+    }
+    if (task.requiresTests && task.testResult !== "passed") {
+      return {
+        ok: false,
+        error:
+          task.testResult === "failed"
+            ? "tests failed — fix and re-report with `meetroom test report`"
+            : "task requires a test result before review — run `meetroom test report <task-id> passed|failed`",
+      };
+    }
+  }
+
+  if (status === "done") {
+    const reviews = session.reviews.filter((r) => r.taskId === taskId);
+    const approved = reviews.find((r) => r.status === "approved");
+    if (!approved) {
+      return { ok: false, error: "task cannot move to done without an approved review" };
+    }
+    if (session.config.requirePrMergeForDone && approved.prUrl && !prMergedFlag(session, taskId)) {
+      return { ok: false, error: "session requires the PR to be merged before done (report with `meetroom ci report` or `meetroom review pr-merged`)" };
+    }
+    if (task.requiresCI) {
+      const ci = session.ciStatuses.find((c) => c.taskId === taskId);
+      if (!ci || ci.status !== "passed") {
+        return { ok: false, error: `task requires CI to pass (current: ${ci?.status ?? "no status reported"})` };
+      }
+    }
+    task.doneAt = now();
+  }
+
+  task.status = status;
+  task.updatedAt = now();
+  reg.event(session, "task-move", agentId, { taskId, status });
+  if (status === "done") {
+    updateReputationOnTaskDone(reg, session, task);
+    unblockDependents(reg, session, task.id);
+  }
+  return { ok: true, status };
+}
+
+function prMergedFlag(session: Session, taskId: string): boolean {
+  return session.events.some((e) => e.type === "pr-merged" && e.data?.taskId === taskId);
+}
+
+/** When a task completes, nudge tasks that were blocked on it. */
+function unblockDependents(reg: Registry, session: Session, doneTaskId: string): void {
+  for (const t of session.tasks) {
+    if (t.status === "blocked" && t.dependsOn?.includes(doneTaskId) && unmetDependencies(session, t).length === 0) {
+      t.status = "todo";
+      t.updatedAt = now();
+      reg.notice(session, `task ${t.id} ("${t.title}") is unblocked — all dependencies done`);
+    }
+  }
+}
+
+export function reportTestResult(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  result: "passed" | "failed",
+  agentId?: string
+): { ok: boolean; error?: string } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  task.testResult = result;
+  task.updatedAt = now();
+  reg.event(session, "test-result", agentId, { taskId, result });
+  if (result === "failed") reg.notice(session, `tests FAILED for task ${taskId} ("${task.title}")`);
+  return { ok: true };
+}
+
+// V3 #3 — CI/CD hook: daemon receives status via generic webhook or CLI report.
+export function reportCIStatus(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  status: "pending" | "passed" | "failed",
+  provider: "github-actions" | "gitlab-ci" | "generic-webhook" = "generic-webhook",
+  url?: string
+): { ok: boolean; error?: string } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  let ci = session.ciStatuses.find((c) => c.taskId === taskId);
+  if (!ci) {
+    ci = { taskId, provider, status, url, updatedAt: now() };
+    session.ciStatuses.push(ci);
+  } else {
+    ci.provider = provider;
+    ci.status = status;
+    ci.url = url ?? ci.url;
+    ci.updatedAt = now();
+  }
+  reg.event(session, status === "failed" ? "ci-failed" : "ci-status", undefined, { taskId, status, url });
+  if (status === "failed") {
+    reg.notice(session, `CI FAILED for task ${taskId} ("${task.title}")${url ? ` — ${url}` : ""}`);
+  }
+  return { ok: true };
+}
