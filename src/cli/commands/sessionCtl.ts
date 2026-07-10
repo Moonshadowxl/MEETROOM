@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { get as httpGet } from "node:http";
+import { get as httpsGet } from "node:https";
 import { createInterface } from "node:readline";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "../../shared/types.js";
-import { api, fail, requireContext, resolveAgentId, type Parsed } from "../client.js";
+import { api, baseUrl, fail, requireContext, resolveAgentId, type Parsed } from "../client.js";
 
 // Session lifecycle + observability commands: pause/resume/end (V2 #7),
 // export (V2 #10), fork/compare (V3 #8), rollback (V3 #9), listen (SSE),
@@ -34,7 +35,7 @@ export async function cmdExport(parsed: Parsed): Promise<void> {
   const flags = sessionId ? { ...parsed.flags, session: sessionId } : parsed.flags;
   const ctx = requireContext(flags);
   const format = parsed.flags.format === "json" ? "json" : "md";
-  const url = `http://${ctx.host}:${ctx.port}/api/sessions/${ctx.sessionId}/export?format=${format}`;
+  const url = `${baseUrl(ctx)}/api/sessions/${ctx.sessionId}/export?format=${format}`;
   const res = await fetch(url, { headers: ctx.token ? { "x-meetroom-token": ctx.token } : {} });
   if (!res.ok) fail(`export failed: HTTP ${res.status}`);
   console.log(await res.text());
@@ -95,7 +96,8 @@ export async function cmdListen(parsed: Parsed): Promise<void> {
   }
   const path = `/api/sessions/${ctx.sessionId}/events${agentId && agentId !== "human" ? `?agentId=${encodeURIComponent(agentId)}` : ""}`;
   console.log(`listening to ${ctx.sessionId} (ctrl-c to stop)...`);
-  const req = httpGet(
+  const get = ctx.scheme === "https" ? httpsGet : httpGet;
+  const req = get(
     { host: ctx.host, port: ctx.port, path, headers: ctx.token ? { "x-meetroom-token": ctx.token } : {} },
     (res) => {
       if (res.statusCode !== 200) fail(`listen failed: HTTP ${res.statusCode}`);

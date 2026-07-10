@@ -67,6 +67,11 @@ export function resolveProposal(
   if (!p) return { ok: false, error: "no such proposal" };
   if (agentId !== "human" && p.authorId !== agentId) return { ok: false, error: "only the author (or the human) can resolve" };
   if (p.status === "resolved" || p.status === "rejected") return { ok: false, error: `proposal already ${p.status}` };
+  // Once a proposal is in voting or escalated, the author is out of moves:
+  // re-resolving would wipe votes / undo the escalation. Only the human decides.
+  if (agentId !== "human" && (p.status === "voting" || p.status === "escalated")) {
+    return { ok: false, error: `proposal is ${p.status} — only the human can resolve it now` };
+  }
 
   if (agentId === "human" || p.objections.length === 0) {
     finishProposal(reg, session, p, "resolved");

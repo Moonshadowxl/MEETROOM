@@ -127,15 +127,17 @@ function openPr(sessionId: string, taskId: string, title: string): string {
     fail(`could not push branch ${branch}: ${(err as Error).message}`);
   }
   const template = process.env.MEETROOM_PR_CMD;
-  const cmds = template
-    ? [resolveSecrets(template.replaceAll("{branch}", branch).replaceAll("{title}", title))]
+  // Default commands run without a shell so task titles can't inject commands;
+  // MEETROOM_PR_CMD is the user's own template and keeps shell semantics.
+  const cmds: Array<{ file: string; args: string[] }> = template
+    ? [{ file: "sh", args: ["-c", resolveSecrets(template.replaceAll("{branch}", branch).replaceAll("{title}", title))] }]
     : [
-        `gh pr create --head ${branch} --title ${JSON.stringify(`[meetroom] ${title}`)} --body "Automated meetroom review PR for task ${taskId}"`,
-        `glab mr create --source-branch ${branch} --title ${JSON.stringify(`[meetroom] ${title}`)} --description "Automated meetroom review MR for task ${taskId}" -y`,
+        { file: "gh", args: ["pr", "create", "--head", branch, "--title", `[meetroom] ${title}`, "--body", `Automated meetroom review PR for task ${taskId}`] },
+        { file: "glab", args: ["mr", "create", "--source-branch", branch, "--title", `[meetroom] ${title}`, "--description", `Automated meetroom review MR for task ${taskId}`, "-y"] },
       ];
   for (const cmd of cmds) {
     try {
-      const out = execFileSync("sh", ["-c", cmd], { encoding: "utf8" });
+      const out = execFileSync(cmd.file, cmd.args, { encoding: "utf8" });
       const url = out.match(/https?:\/\/\S+/)?.[0];
       if (url) return url;
     } catch {

@@ -56,6 +56,11 @@ export function decideReview(
 ): { ok: boolean; error?: string } {
   const review = session.reviews.find((r) => r.id === reviewId);
   if (!review) return { ok: false, error: "no such review" };
+  // The reviewer must actually exist — otherwise the self-review gate can be
+  // bypassed by passing any made-up agentId.
+  if (reviewerAgentId !== "human" && !session.agents.some((a) => a.id === reviewerAgentId)) {
+    return { ok: false, error: "unknown reviewer: reviews must come from a joined agent or the human" };
+  }
   // Self-review is rejected by the daemon to keep the gate meaningful (V2 #3).
   if (review.authorAgentId === reviewerAgentId) {
     return { ok: false, error: "self-review rejected: another agent (or the human) must review this diff" };

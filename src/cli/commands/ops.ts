@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Session, SessionTemplate } from "../../shared/types.js";
-import { api, fail, requireContext, resolveAgentId, type Parsed, DEFAULT_PORT } from "../client.js";
+import { api, baseUrl, fail, requireContext, resolveAgentId, type Parsed, DEFAULT_PORT } from "../client.js";
 
 // V4 CLI — agent runners, budgets, attention queue, artifacts, routines, templates.
 
@@ -37,7 +37,7 @@ export async function cmdAgent(parsed: Parsed): Promise<void> {
   }
   if (sub === "logs") {
     if (!name) fail("usage: meetroom agent logs <name>");
-    const url = `http://${ctx.host}:${ctx.port}/api/sessions/${ctx.sessionId}/runners/${name}/logs`;
+    const url = `${baseUrl(ctx)}/api/sessions/${ctx.sessionId}/runners/${name}/logs`;
     const res = await fetch(url, { headers: ctx.token ? { "x-meetroom-token": ctx.token } : {} });
     console.log(await res.text());
     return;

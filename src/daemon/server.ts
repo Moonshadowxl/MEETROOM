@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Plugin, Session, SessionType } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import { Registry } from "./registry.js";
-import { claimFile, claimLines, releaseFile, releaseLines, sweepClaimTimeouts, touchClaim } from "./fileClaims.js";
+import { claimFile, claimLines, releaseAgentPresence, releaseFile, releaseLines, sweepClaimTimeouts, touchClaim } from "./fileClaims.js";
 import { createProposal, objectToProposal, resolveProposal, sweepProposalTimeouts, voteOnProposal } from "./resolution.js";
 import { claimTask, createTask, moveTask, reportCIStatus, reportTestResult } from "./tasks.js";
 import { commentOnReview, decideReview, submitReview, syncPrStatus } from "./reviews.js";
@@ -41,12 +41,13 @@ import {
   sweepSelfHealing,
   vetoAction,
 } from "./evolve.js";
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   agentBudgetBlocked,
   checkBudgets,
   cronMatches,
   heartbeat,
+  isSafeRunnerName,
   loadRoutines,
   loadTemplate,
   runnerLogPath,
@@ -278,7 +279,11 @@ export function buildServer(reg: Registry) {
 
     route("GET", "/api/sessions/:id/state", (c) => {
       const s = withSession(c);
-      if (s) json(c.res, 200, { ok: true, session: s });
+      if (!s) return;
+      // Never echo credentials back out: the session token and integration
+      // HMAC secrets live in the session object but are not state consumers need.
+      const { token, integrations, ...rest } = s;
+      json(c.res, 200, { ok: true, session: { ...rest, integrations: integrations.map((i) => ({ source: i.source })) } });
     }),
 
     route("POST", "/api/sessions/:id/join", (c) => {
@@ -320,9 +325,7 @@ export function buildServer(reg: Registry) {
       const agent = s.agents.find((a) => a.id === c.body.agentId);
       if (!agent) return bad(c.res, "no such agent", 404);
       agent.status = "disconnected";
-      for (const claim of [...s.claims].filter((cl) => cl.agentId === agent.id)) {
-        releaseFile(reg, s, agent.id, claim.filepath);
-      }
+      releaseAgentPresence(reg, s, agent.id);
       reg.event(s, "agent-left", agent.id, {});
       reg.notice(s, `${agent.name} left the room`);
       json(c.res, 200, { ok: true });
@@ -704,6 +707,7 @@ export function buildServer(reg: Registry) {
     route("GET", "/api/sessions/:id/runners/:name/logs", (c) => {
       const s = withSession(c);
       if (!s) return;
+      if (!isSafeRunnerName(c.params.name)) return bad(c.res, "no such runner", 404);
       const p = runnerLogPath(reg.dataDir, s.id, c.params.name);
       c.res.writeHead(200, { "content-type": "text/plain" });
       c.res.end(existsSync(p) ? readFileSync(p) : "(no logs yet)");
@@ -927,8 +931,11 @@ export function buildServer(reg: Registry) {
       if (!source || !text) return bad(c.res, "source and text required");
       const integration = s.integrations.find((i) => i.source === source);
       if (!integration) return bad(c.res, `unknown integration source "${source}" — add it with \`meetroom integration add\``, 403);
-      const expected = createHmac("sha256", integration.secret).update(text).digest("hex");
-      if (signature !== expected) return bad(c.res, "bad signature (HMAC-SHA256 of the text with the shared secret)", 403);
+      const expected = createHmac("sha256", integration.secret).update(text).digest();
+      const given = Buffer.from(String(signature ?? ""), "hex");
+      if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+        return bad(c.res, "bad signature (HMAC-SHA256 of the text with the shared secret)", 403);
+      }
       const msg = reg.chat(s, { agentId: "system", message: `[${source}] ${author ?? "someone"}: ${text}` });
       json(c.res, 200, { ok: true, message: msg });
     }),
@@ -1052,9 +1059,11 @@ export function buildServer(reg: Registry) {
         r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
         const body = req.method === "GET" ? {} : await readBody(req);
         // V4 #4 — every authenticated agent call doubles as a liveness heartbeat.
+        // (Only after the token check: unauthenticated remote callers must not
+        // be able to keep an agent looking alive.)
         if (params.id && body?.agentId) {
           const s = reg.get(params.id);
-          if (s) heartbeat(s, body.agentId);
+          if (s && authorized(req, s)) heartbeat(s, body.agentId);
         }
         await r.handler({ req, res, reg, body, params, query: url.searchParams });
         return;

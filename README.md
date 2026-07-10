@@ -121,6 +121,7 @@ The V4–V8 specs live in [`specs/`](specs/); the deep-dive usage manual is [`GU
 | `MEETROOM_OPERATOR` | shell command for the L3+ meta-agent (attention item JSON in → action JSON out) |
 | `MEETROOM_OPERATOR_KEY` | operator key for privileged commands (or `meetroom login --key`) |
 | `MEETROOM_TLS_CERT` / `MEETROOM_TLS_KEY` | serve the daemon over HTTPS |
+| `MEETROOM_SCHEME` | set to `https` so the CLI talks to a TLS daemon (or pass `--https` on `join`/any command) |
 | `MEETROOM_HOME` | where guilds/templates/secrets/global memory live (default `~/.meetroom`) |
 
 ## Remote sessions

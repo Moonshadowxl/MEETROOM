@@ -115,6 +115,24 @@ export function releaseFile(reg: Registry, session: Session, agentId: string, fi
   return { ok: true };
 }
 
+/**
+ * Full cleanup when an agent leaves or is detected dead: drop it from every
+ * waitlist (so it can't be granted files it isn't around to use), release its
+ * line-range claims, then release its file claims (handing off to waiters).
+ */
+export function releaseAgentPresence(reg: Registry, session: Session, agentId: string): void {
+  for (const wl of [...session.waitlists]) {
+    wl.waitingAgentIds = wl.waitingAgentIds.filter((id) => id !== agentId);
+  }
+  session.waitlists = session.waitlists.filter((w) => w.waitingAgentIds.length > 0);
+  for (const claim of [...session.semanticClaims].filter((c) => c.agentId === agentId)) {
+    releaseLines(reg, session, agentId, claim.filepath);
+  }
+  for (const claim of [...session.claims].filter((c) => c.agentId === agentId)) {
+    releaseFile(reg, session, agentId, claim.filepath);
+  }
+}
+
 /** Mark activity on a claim so the timeout sweeper doesn't reap it. */
 export function touchClaim(session: Session, agentId: string, filepath: string): boolean {
   const claim = session.claims.find((c) => c.filepath === filepath && c.agentId === agentId);

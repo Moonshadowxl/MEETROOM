@@ -90,6 +90,7 @@ export function vetoAction(reg: Registry, session: Session, actionId: string): {
 
 /** Execute pending actions whose veto window has closed. */
 export function sweepPendingActions(reg: Registry, session: Session): void {
+  if (session.status !== "active") return; // paused/ended rooms are frozen — no meta-agent actions
   for (const action of session.pendingActions ?? []) {
     if (action.status !== "pending" || action.executeAt > now()) continue;
     action.status = "executed";

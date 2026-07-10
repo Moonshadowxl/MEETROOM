@@ -19,7 +19,13 @@ export type RoomContext = {
   host: string;
   port: number;
   token?: string;
+  scheme?: "http" | "https"; // https for daemons started with MEETROOM_TLS_CERT/KEY
 };
+
+/** Base URL for a daemon, honoring the https scheme for TLS rooms (V6 #2). */
+export function baseUrl(ctx: Pick<RoomContext, "host" | "port" | "scheme">): string {
+  return `${ctx.scheme ?? "http"}://${ctx.host}:${ctx.port}`;
+}
 
 export function meetroomDir(cwd = process.cwd()): string {
   return join(cwd, ".meetroom");
@@ -87,11 +93,12 @@ export function requireContext(flags: Flags, cwd = process.cwd()): RoomContext {
   const host = (flags.host as string) ?? lock?.host ?? "127.0.0.1";
   const port = flags.port ? Number(flags.port) : lock?.port ?? Number(process.env.MEETROOM_PORT ?? DEFAULT_PORT);
   const token = (flags.token as string) ?? lock?.token;
+  const scheme = flags.https || process.env.MEETROOM_SCHEME === "https" ? "https" as const : lock?.scheme;
   const sessionId = explicit ?? lock?.sessionId;
   if (!sessionId) {
     fail("no active meetroom session here — run `meetroom start` or pass --session <id> (and --host/--port for remote rooms)");
   }
-  return { sessionId, host, port, token };
+  return { sessionId, host, port, token, scheme };
 }
 
 /** Operator identity (V6 #1): env var wins, then ~/.meetroom/credentials.json. */
@@ -107,12 +114,12 @@ export function storedOperatorKey(): string | undefined {
 }
 
 export async function api<T = any>(
-  ctx: Pick<RoomContext, "host" | "port" | "token">,
+  ctx: Pick<RoomContext, "host" | "port" | "token" | "scheme">,
   method: string,
   path: string,
   body?: unknown
 ): Promise<T> {
-  const url = `http://${ctx.host}:${ctx.port}${path}`;
+  const url = `${baseUrl(ctx)}${path}`;
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (ctx.token) headers["x-meetroom-token"] = ctx.token;
   const opKey = storedOperatorKey();
@@ -145,6 +152,22 @@ export type Flags = Record<string, string | boolean>;
 
 export type Parsed = { positional: string[]; flags: Flags };
 
+// Flags that never take a value. Without this, `meetroom claim --wait src/x.ts`
+// would swallow "src/x.ts" as the value of --wait and lose the positional.
+const BOOLEAN_FLAGS = new Set([
+  "wait",
+  "remote",
+  "project",
+  "user",
+  "yes",
+  "pr",
+  "confirm",
+  "https",
+  "requires-ci",
+  "requires-tests",
+  "require-pr-merge",
+]);
+
 /** `--flag value`, `--flag=value`, and bare `--flag` (boolean) forms. */
 export function parseArgs(argv: string[]): Parsed {
   const positional: string[] = [];
@@ -158,7 +181,7 @@ export function parseArgs(argv: string[]): Parsed {
       } else {
         const key = a.slice(2);
         const next = argv[i + 1];
-        if (next !== undefined && !next.startsWith("--")) {
+        if (!BOOLEAN_FLAGS.has(key) && next !== undefined && !next.startsWith("--")) {
           flags[key] = next;
           i++;
         } else {

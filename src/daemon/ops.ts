@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import type { AgentRunner, Artifact, Budget, Routine, Session, SessionTemplate } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import type { Registry } from "./registry.js";
-import { releaseFile } from "./fileClaims.js";
+import { releaseAgentPresence } from "./fileClaims.js";
 import { aggregateUsage } from "./exporter.js";
 
 // V4 — operations & autonomy: agent runner/supervisor (#1), budget
@@ -20,7 +20,13 @@ function runnerKey(sessionId: string, agentName: string): string {
   return `${sessionId}/${agentName}`;
 }
 
+/** Runner names become log filenames — keep them path-safe. */
+export function isSafeRunnerName(name: string): boolean {
+  return /^[A-Za-z0-9._@-]+$/.test(name) && !name.includes("..");
+}
+
 export function runnerLogPath(dataDir: string, sessionId: string, agentName: string): string {
+  if (!isSafeRunnerName(agentName)) throw new Error(`unsafe runner name "${agentName}"`);
   const dir = join(dataDir, "..", "agent-logs", sessionId);
   mkdirSync(dir, { recursive: true });
   return join(dir, `${agentName}.log`);
@@ -32,8 +38,13 @@ export function spawnRunner(
   dataDir: string,
   opts: { agentName: string; command: string; cwd?: string; restartPolicy?: AgentRunner["restartPolicy"]; maxRestarts?: number }
 ): { ok: boolean; error?: string; runner?: AgentRunner } {
+  if (!isSafeRunnerName(opts.agentName)) {
+    return { ok: false, error: "runner name may only contain letters, digits, and . _ @ -" };
+  }
   let runner = session.runners.find((r) => r.agentName === opts.agentName);
-  if (runner && runner.state === "running") return { ok: false, error: `runner "${opts.agentName}" is already running (pid ${runner.pid})` };
+  if (runner && (runner.state === "running" || runner.state === "restarting")) {
+    return { ok: false, error: `runner "${opts.agentName}" is already ${runner.state}${runner.pid ? ` (pid ${runner.pid})` : ""}` };
+  }
   if (!runner) {
     runner = {
       agentName: opts.agentName,
@@ -77,10 +88,14 @@ function launch(reg: Registry, session: Session, dataDir: string, runner: AgentR
 
   child.on("exit", (code) => {
     children.delete(runnerKey(session.id, runner.agentName));
-    const crashed = code !== 0;
+    // stopRunner marks the runner "stopped" before killing it; an explicit stop
+    // must neither count as a crash nor trigger the restart policy.
+    const explicitStop = runner.state === "stopped";
+    const crashed = code !== 0 && !explicitStop;
     runner.state = crashed ? "crashed" : "stopped";
     reg.event(session, crashed ? "runner-crashed" : "runner-exited", undefined, { agentName: runner.agentName, code });
     const shouldRestart =
+      !explicitStop &&
       session.status === "active" &&
       (runner.restartPolicy === "always" || (runner.restartPolicy === "on-crash" && crashed)) &&
       runner.restarts < runner.maxRestarts;
@@ -100,10 +115,12 @@ function launch(reg: Registry, session: Session, dataDir: string, runner: AgentR
 export function stopRunner(reg: Registry, session: Session, agentName: string): { ok: boolean; error?: string } {
   const runner = session.runners.find((r) => r.agentName === agentName);
   if (!runner) return { ok: false, error: "no such runner" };
-  runner.restartPolicy = "never"; // an explicit stop must not trigger auto-restart
+  // Mark stopped BEFORE killing: the exit handler reads this to know the stop
+  // was explicit (no auto-restart, not a crash). The policy itself is kept so
+  // a later `agent restart` behaves as originally configured.
+  runner.state = "stopped";
   const child = children.get(runnerKey(session.id, agentName));
   if (child) child.kill("SIGTERM");
-  runner.state = "stopped";
   reg.event(session, "runner-stopped", undefined, { agentName });
   return { ok: true };
 }
@@ -177,9 +194,7 @@ export function sweepLiveness(reg: Registry, session: Session): void {
       agent.status = "disconnected";
       reg.event(session, "agent-disconnected", agent.id, { silentMinutes: Math.round(silentMs / 60_000) });
       reg.notice(session, `${agent.name} appears dead (${Math.round(silentMs / 60_000)}m silent) — releasing claims, returning tasks`);
-      for (const claim of [...session.claims].filter((c) => c.agentId === agent.id)) {
-        releaseFile(reg, session, agent.id, claim.filepath);
-      }
+      releaseAgentPresence(reg, session, agent.id);
       for (const task of session.tasks) {
         if (task.assignedAgentId === agent.id && (task.status === "in-progress" || task.status === "todo")) {
           task.reassignedFrom = [...(task.reassignedFrom ?? []), agent.id];
@@ -298,7 +313,7 @@ export function cronMatches(expr: string, date: Date): boolean {
     field.split(",").some((part) => {
       if (part === "*") return true;
       const step = part.match(/^\*\/(\d+)$/);
-      if (step) return values[i] % Number(step[1]) === 0;
+      if (step) return Number(step[1]) > 0 && values[i] % Number(step[1]) === 0;
       return Number(part) === values[i];
     })
   );

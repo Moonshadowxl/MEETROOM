@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Review, Session, Task } from "../shared/types.js";
@@ -57,29 +57,36 @@ export function predictConflicts(session: Session, task: Task): string[] {
 export function runReviewCopilot(reg: Registry, session: Session, review: Review): void {
   const cmd = process.env.MEETROOM_REVIEWER;
   if (!cmd) return;
-  try {
-    const out = execFileSync("sh", ["-c", cmd], { input: review.diff, encoding: "utf8", timeout: 120_000 });
-    const parsed = JSON.parse(out) as { severity?: string; line?: number; text: string }[];
-    if (!Array.isArray(parsed)) return;
-    review.copilotFindings = parsed
-      .filter((f) => typeof f.text === "string")
-      .map((f) => ({
-        severity: f.severity === "blocker" || f.severity === "warn" ? f.severity : "info",
-        line: f.line,
-        text: f.text,
-      }));
-    for (const f of review.copilotFindings) {
-      review.comments.push({ agentId: "copilot", line: f.line, text: `[${f.severity}] ${f.text}`, ts: now() });
+  // Runs in the background: a slow reviewer model must never stall the daemon
+  // (this is called from the review-submit request path). Findings are
+  // attached to the review whenever they arrive.
+  const child = execFile("sh", ["-c", cmd], { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
+    if (err) return; // copilot failure must never block a submission
+    try {
+      const parsed = JSON.parse(out) as { severity?: string; line?: number; text: string }[];
+      if (!Array.isArray(parsed)) return;
+      review.copilotFindings = parsed
+        .filter((f) => typeof f.text === "string")
+        .map((f) => ({
+          severity: f.severity === "blocker" || f.severity === "warn" ? f.severity : "info",
+          line: f.line,
+          text: f.text,
+        }));
+      for (const f of review.copilotFindings) {
+        review.comments.push({ agentId: "copilot", line: f.line, text: `[${f.severity}] ${f.text}`, ts: now() });
+      }
+      review.copilotVerdict = review.copilotFindings.some((f) => f.severity !== "info") ? "needs-attention" : "looks-clean";
+      reg.event(session, "copilot-review", "copilot", { reviewId: review.id, verdict: review.copilotVerdict, findings: review.copilotFindings.length });
+      if (review.copilotVerdict === "needs-attention" && review.authorConfidence === "low") {
+        // Strongest "a human should look" signal in the system (spec V5 #3).
+        reg.addAttention(session.id, "low-confidence-review", `review ${review.id}: low author confidence + copilot flags`);
+      }
+    } catch {
+      // Malformed copilot output: skip annotations.
     }
-    review.copilotVerdict = review.copilotFindings.some((f) => f.severity !== "info") ? "needs-attention" : "looks-clean";
-    reg.event(session, "copilot-review", "copilot", { reviewId: review.id, verdict: review.copilotVerdict, findings: review.copilotFindings.length });
-    if (review.copilotVerdict === "needs-attention" && review.authorConfidence === "low") {
-      // Strongest "a human should look" signal in the system (spec V5 #3).
-      reg.addAttention(session.id, "low-confidence-review", `review ${review.id}: low author confidence + copilot flags`);
-    }
-  } catch {
-    // Copilot failure must never block a submission.
-  }
+  });
+  child.stdin?.on("error", () => {}); // reviewer may exit before reading the diff
+  child.stdin?.end(review.diff);
 }
 
 // ---- #7 adaptive timeouts ------------------------------------------------------------
