@@ -64,6 +64,10 @@ import {
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 export const DEFAULT_PORT = 7433;
 
+// Accepted inbound-integration signatures, kept until their freshness window
+// closes (replay protection): key `${sessionId}:${signature}` → expiry epoch ms.
+const seenInboundSignatures = new Map<string, number>();
+
 type Ctx = {
   req: IncomingMessage;
   res: ServerResponse;
@@ -82,14 +86,16 @@ function bad(res: ServerResponse, error: string, status = 400): void {
   json(res, status, { ok: false, error });
 }
 
+/** Returns the parsed body, {} for an empty body, or undefined for malformed JSON. */
 async function readBody(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
-  if (chunks.length === 0) return {};
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw.trim()) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(raw);
   } catch {
-    return {};
+    return undefined; // caller answers 400 instead of silently acting on {}
   }
 }
 
@@ -99,10 +105,14 @@ function isLoopback(req: IncomingMessage): boolean {
 }
 
 /** Remote sessions require the session token for non-localhost callers (V2 #4). */
-function authorized(req: IncomingMessage, session: Session): boolean {
+export function authorized(req: IncomingMessage, session: Session): boolean {
   if (!session.token || isLoopback(req)) return true;
   const header = req.headers["x-meetroom-token"];
-  return header === session.token;
+  if (header === session.token) return true;
+  // EventSource cannot set request headers, so the SSE stream (and any other
+  // GET) may pass the token as a query parameter instead.
+  const url = new URL(req.url ?? "/", "http://localhost");
+  return url.searchParams.get("token") === session.token;
 }
 
 // Mutations that represent *work* are gated while a room is paused (V2 #7).
@@ -864,6 +874,7 @@ export function buildServer(reg: Registry) {
     }),
 
     route("DELETE", "/api/routines/:rid", (c) => {
+      if (!requireOperator(c, "maintainer")) return; // same bar as creating one
       const routines = loadRoutines(reg.dataDir);
       const next = routines.filter((r) => r.id !== c.params.rid);
       if (next.length === routines.length) return bad(c.res, "no such routine", 404);
@@ -1003,8 +1014,9 @@ export function buildServer(reg: Registry) {
     }),
 
     // V7 #3 — external systems talk back: HMAC-signed messages land in chat.
-    // The signature covers `${ts}.${text}` and ts must be fresh, so a captured
-    // request can't be replayed later.
+    // The signature covers `${ts}.${text}` and ts must be fresh; on top of the
+    // freshness window, each accepted signature is remembered until it expires
+    // so a captured request can't be replayed even inside the window.
     route("POST", "/api/sessions/:id/inbound", (c) => {
       const s = reg.get(c.params.id); // signature IS the auth — no session token needed
       if (!s) return bad(c.res, "no such session", 404);
@@ -1022,6 +1034,12 @@ export function buildServer(reg: Registry) {
       if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
         return bad(c.res, "bad signature (HMAC-SHA256 of `${ts}.${text}` with the shared secret)", 403);
       }
+      const sigKey = `${s.id}:${given.toString("hex")}`;
+      for (const [k, expiresAt] of seenInboundSignatures) if (expiresAt < Date.now()) seenInboundSignatures.delete(k);
+      if (seenInboundSignatures.has(sigKey)) {
+        return bad(c.res, "replayed request — each signed message is accepted once", 403);
+      }
+      seenInboundSignatures.set(sigKey, sentAt + 6 * 60_000); // outlives the freshness window
       const msg = reg.chat(s, { agentId: "system", message: `[${source}] ${author ?? "someone"}: ${text}` });
       json(c.res, 200, { ok: true, message: msg });
     }),
@@ -1127,7 +1145,7 @@ export function buildServer(reg: Registry) {
         res.writeHead(204, {
           "access-control-allow-origin": "*",
           "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
-          "access-control-allow-headers": "content-type,x-meetroom-token",
+          "access-control-allow-headers": "content-type,x-meetroom-token,x-meetroom-operator",
         });
         return res.end();
       }
@@ -1144,6 +1162,7 @@ export function buildServer(reg: Registry) {
         const params: Record<string, string> = {};
         r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
         const body = req.method === "GET" ? {} : await readBody(req);
+        if (body === undefined) return bad(res, "request body is not valid JSON", 400);
         // V4 #4 — every authenticated agent call doubles as a liveness heartbeat.
         // (Only after the token check: unauthenticated remote callers must not
         // be able to keep an agent looking alive.)

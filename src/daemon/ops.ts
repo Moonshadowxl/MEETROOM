@@ -60,6 +60,10 @@ export function spawnRunner(
     runner.command = opts.command;
     runner.cwd = opts.cwd ?? runner.cwd;
     runner.restartPolicy = opts.restartPolicy ?? runner.restartPolicy;
+    if (opts.maxRestarts !== undefined) runner.maxRestarts = opts.maxRestarts;
+    // A manual respawn is a fresh start: without this, a runner that once
+    // exhausted maxRestarts keeps the stale counter and never auto-restarts again.
+    runner.restarts = 0;
   }
   launch(reg, session, dataDir, runner);
   return { ok: true, runner };
@@ -87,6 +91,10 @@ function launch(reg: Registry, session: Session, dataDir: string, runner: AgentR
   reg.event(session, "runner-started", undefined, { agentName: runner.agentName, pid: child.pid });
 
   child.on("exit", (code) => {
+    // `agent restart` stops the old child and launches a new one before the old
+    // exit event lands. Only the runner's *current* child may touch its state —
+    // otherwise this handler would mark the fresh child "crashed" and deregister it.
+    if (children.get(runnerKey(session.id, runner.agentName)) !== child) return;
     children.delete(runnerKey(session.id, runner.agentName));
     // stopRunner marks the runner "stopped" before killing it; an explicit stop
     // must neither count as a crash nor trigger the restart policy.
@@ -309,11 +317,13 @@ export function cronMatches(expr: string, date: Date): boolean {
   const fields = expr.trim().split(/\s+/);
   if (fields.length !== 5) return false;
   const values = [date.getMinutes(), date.getHours(), date.getDate(), date.getMonth() + 1, date.getDay()];
+  const fieldMin = [0, 0, 1, 1, 0]; // cron steps count from the field's minimum (dom/month are 1-based)
   return fields.every((field, i) =>
     field.split(",").some((part) => {
       if (part === "*") return true;
       const step = part.match(/^\*\/(\d+)$/);
-      if (step) return Number(step[1]) > 0 && values[i] % Number(step[1]) === 0;
+      if (step) return Number(step[1]) > 0 && (values[i] - fieldMin[i]) % Number(step[1]) === 0;
+      if (i === 4 && Number(part) === 7) return values[i] === 0; // cron allows 0 or 7 for Sunday
       return Number(part) === values[i];
     })
   );

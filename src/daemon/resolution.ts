@@ -27,6 +27,13 @@ export function createProposal(reg: Registry, session: Session, authorId: string
   return proposal;
 }
 
+/** Objections and votes must come from real room members — otherwise a single
+ *  caller could stuff the ballot (or force escalation) with invented agent ids,
+ *  the same way decideReview guards the review gate. */
+function isJoinedAgent(session: Session, agentId: string): boolean {
+  return session.agents.some((a) => a.id === agentId);
+}
+
 export function objectToProposal(
   reg: Registry,
   session: Session,
@@ -36,6 +43,9 @@ export function objectToProposal(
 ): { ok: boolean; error?: string } {
   const p = session.proposals.find((x) => x.id === proposalId);
   if (!p) return { ok: false, error: "no such proposal" };
+  if (agentId !== "human" && !isJoinedAgent(session, agentId)) {
+    return { ok: false, error: "unknown agent: objections must come from a joined agent or the human" };
+  }
   if (p.status !== "open" && p.status !== "contested") return { ok: false, error: `proposal is ${p.status}` };
   if (p.authorId === agentId) return { ok: false, error: "cannot object to your own proposal" };
   p.objections.push({ agentId, reason, ts: now() });
@@ -133,6 +143,9 @@ export function voteOnProposal(
 ): { ok: boolean; status?: Proposal["status"]; error?: string } {
   const p = session.proposals.find((x) => x.id === proposalId);
   if (!p) return { ok: false, error: "no such proposal" };
+  if (!isJoinedAgent(session, agentId)) {
+    return { ok: false, error: "unknown agent: only joined agents vote (the human resolves or rejects instead)" };
+  }
   if (p.status !== "voting") return { ok: false, error: `proposal is ${p.status}, not voting` };
   p.votes = p.votes ?? [];
   const existing = p.votes.find((v) => v.agentId === agentId);

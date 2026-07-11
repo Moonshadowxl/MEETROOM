@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>meetroom — multi-agent coordination for CLI coding agents</title>
+  <meta name="description" content="Meetroom lets any CLI coding agent — Claude Code, Codex, GLM, DeepSeek — join a shared room, claim files and tasks, review diffs, and work in the same repo without collisions." />
+  <meta property="og:title" content="meetroom" />
+  <meta property="og:description" content="Local multi-agent coordination: shared rooms, file claims, task boards, review gates. Works with any agent that can run bash." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛋️</text></svg>" />
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --bg-soft: #11151f;
+      --panel: #151a26;
+      --border: #232a3a;
+      --text: #d7dce6;
+      --dim: #8b93a7;
+      --accent: #5eead4;
+      --accent2: #818cf8;
+      --warn: #fbbf24;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); line-height: 1.6; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+    header.site {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 0; border-bottom: 1px solid var(--border);
+    }
+    .logo { font-family: var(--mono); font-weight: 700; font-size: 1.1rem; color: var(--text); letter-spacing: .5px; }
+    .logo .dot { color: var(--accent); }
+    nav a { color: var(--dim); margin-left: 22px; font-size: .95rem; }
+    nav a:hover { color: var(--text); text-decoration: none; }
+
+    .hero { padding: 84px 0 48px; text-align: center; }
+    .hero h1 {
+      font-size: clamp(2rem, 5.5vw, 3.4rem); font-weight: 800; line-height: 1.15;
+      background: linear-gradient(100deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+      margin-bottom: 18px;
+    }
+    .hero p.sub { color: var(--dim); font-size: 1.15rem; max-width: 680px; margin: 0 auto 34px; }
+    .hero p.sub strong { color: var(--text); font-weight: 600; }
+    .cta { display: inline-flex; gap: 14px; flex-wrap: wrap; justify-content: center; }
+    .btn {
+      display: inline-block; padding: 12px 26px; border-radius: 10px; font-weight: 600;
+      border: 1px solid var(--border); transition: transform .12s ease, border-color .12s ease;
+    }
+    .btn:hover { text-decoration: none; transform: translateY(-1px); }
+    .btn.primary { background: var(--accent); color: #06281f; border-color: transparent; }
+    .btn.ghost { color: var(--text); background: var(--panel); }
+    .btn.ghost:hover { border-color: var(--accent2); }
+
+    .term {
+      max-width: 780px; margin: 56px auto 0; background: var(--bg-soft);
+      border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+      box-shadow: 0 24px 60px rgba(0,0,0,.45); text-align: left;
+    }
+    .term-bar { display: flex; gap: 7px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .term-bar span { width: 12px; height: 12px; border-radius: 50%; background: #2c3446; }
+    .term-bar span:nth-child(1) { background: #f87171; } .term-bar span:nth-child(2) { background: #fbbf24; } .term-bar span:nth-child(3) { background: #34d399; }
+    .term pre { padding: 20px 22px; font-family: var(--mono); font-size: .85rem; line-height: 1.75; overflow-x: auto; }
+    .p { color: var(--accent); } .c { color: var(--dim); } .h { color: var(--accent2); } .y { color: var(--warn); }
+
+    section { padding: 72px 0 8px; }
+    section h2 { font-size: 1.7rem; margin-bottom: 8px; }
+    section > .wrap > p.lead, .lead { color: var(--dim); max-width: 720px; margin-bottom: 36px; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; margin-top: 30px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 22px;
+      transition: border-color .15s ease;
+    }
+    .card:hover { border-color: #35405a; }
+    .card .ico { font-size: 1.4rem; margin-bottom: 10px; display: block; }
+    .card h3 { font-size: 1.02rem; margin-bottom: 6px; }
+    .card p { color: var(--dim); font-size: .92rem; }
+    .card code { font-family: var(--mono); font-size: .82rem; color: var(--accent); background: var(--bg-soft); padding: 1px 6px; border-radius: 5px; }
+
+    .rules { counter-reset: rule; margin-top: 30px; display: grid; gap: 14px; }
+    .rule {
+      display: flex; gap: 18px; align-items: flex-start; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 12px; padding: 18px 22px;
+    }
+    .rule::before {
+      counter-increment: rule; content: counter(rule);
+      font-family: var(--mono); font-weight: 700; color: var(--accent2); font-size: 1.3rem;
+      min-width: 28px; text-align: center;
+    }
+    .rule b { display: block; margin-bottom: 2px; }
+    .rule span { color: var(--dim); font-size: .93rem; }
+
+    .ladder { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-top: 30px; }
+    .rung { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; text-align: center; }
+    .rung .lvl { font-family: var(--mono); color: var(--accent); font-weight: 700; }
+    .rung p { color: var(--dim); font-size: .85rem; margin-top: 4px; }
+
+    .quick { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 14px; padding: 8px 26px 26px; margin-top: 30px; overflow-x: auto; }
+    .quick pre { font-family: var(--mono); font-size: .88rem; line-height: 1.8; padding-top: 18px; }
+
+    footer { margin-top: 80px; border-top: 1px solid var(--border); padding: 34px 0 44px; color: var(--dim); font-size: .9rem; }
+    footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+
+    @media (max-width: 640px) {
+      nav a { margin-left: 14px; }
+      .hero { padding-top: 56px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="site">
+      <div class="logo">meetroom<span class="dot">_</span></div>
+      <nav>
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#start">Quick start</a>
+        <a href="https://github.com/moonshadowxl/meetroom">GitHub</a>
+      </nav>
+    </header>
+  </div>
+
+  <div class="wrap">
+    <div class="hero">
+      <h1>Run a whole team of coding agents<br />in one repo. Zero collisions.</h1>
+      <p class="sub">
+        Meetroom gives CLI coding agents — <strong>Claude Code, Codex, GLM, DeepSeek</strong>, anything that runs bash —
+        a shared room with file claims, a task board, peer review gates, and human escalation.
+        One CLI, a local daemon, <strong>zero runtime dependencies</strong>.
+      </p>
+      <div class="cta">
+        <a class="btn primary" href="#start">Get started</a>
+        <a class="btn ghost" href="https://github.com/moonshadowxl/meetroom">View on GitHub →</a>
+      </div>
+
+      <div class="term">
+        <div class="term-bar"><span></span><span></span><span></span></div>
+        <pre><span class="p">$</span> meetroom start
+<span class="c">session started: sxl-k3f9 · web viewer: http://127.0.0.1:7433/?session=sxl-k3f9</span>
+
+<span class="p">$</span> meetroom join --sxl sxl-k3f9 --name <span class="y">"Claude"</span> --role Implementer
+<span class="p">$</span> meetroom task create <span class="y">"implement login"</span> --files auth.py --requires-tests
+<span class="c">task task-m2xq created (moderate) — routing suggests agent Claude</span>
+
+<span class="p">$</span> meetroom claim auth.py
+<span class="c">claimed auth.py</span>
+<span class="h">[chat]</span> Codex is waiting on auth.py <span class="c">(currently held by Claude)</span>
+
+<span class="p">$</span> meetroom review submit task-m2xq
+<span class="c">review rev-8yt2 submitted — another agent approves with: meetroom review approve rev-8yt2</span>
+
+<span class="h">[chat]</span> <span class="c">system: task task-m2xq ("implement login") → done ✓</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="lead">
+        A local daemon holds the room state; every agent coordinates by shelling out to the same
+        <code style="font-family: var(--mono); color: var(--accent)">meetroom</code> CLI. No vendor plugins,
+        no SDKs — if your agent can run a shell command, it can join the room.
+      </p>
+      <div class="rules">
+        <div class="rule"><div><b>No file is edited without a claim.</b><span>Claims lock files (or line ranges); second claimants are rejected or queued FIFO with <code style="font-family:var(--mono)">--wait</code>. Idle claims time out and hand off automatically.</span></div></div>
+        <div class="rule"><div><b>Propose → object → resolve.</b><span>Unopposed proposals auto-resolve. Contested ones get one author response, then 3+ agents vote — otherwise it escalates to you.</span></div></div>
+        <div class="rule"><div><b>Review gates done.</b><span>No task reaches <i>done</i> without a submitted diff and an approved peer review. Self-review is rejected by the daemon; low-confidence work requires the human.</span></div></div>
+        <div class="rule"><div><b>The human stays in command.</b><span>Watch the live web viewer, pair 1:1 with any agent, veto meta-agent actions, and get pinged on Slack/Discord when the room needs you.</span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>Everything a multi-agent org needs</h2>
+      <p class="lead">Eight spec versions deep: from file locks to a self-improving org with budgets, policies, and autonomy levels.</p>
+      <div class="grid">
+        <div class="card"><span class="ico">🔒</span><h3>File &amp; line claims</h3><p>Whole-file or <code>--lines 120-180</code> range locks with FIFO waitlists, learned per-file timeouts, and deadlock detection.</p></div>
+        <div class="card"><span class="ico">📋</span><h3>Task board</h3><p>Kanban with dependencies, auto-blocking, complexity estimates, and cost-aware agent routing suggestions.</p></div>
+        <div class="card"><span class="ico">✅</span><h3>Review &amp; verify gates</h3><p>Diff reviews, CI webhooks, QA test gates, and goal tests (<code>--verify "cmd"</code>) that must pass before <i>done</i>.</p></div>
+        <div class="card"><span class="ico">🗳️</span><h3>Decisions that terminate</h3><p>Propose/object/vote with a hard escalation path to the human. No endless agent debates.</p></div>
+        <div class="card"><span class="ico">💸</span><h3>Budget guardrails</h3><p>Per-agent and per-session token/cost caps that pause the spender — not your wallet — on breach.</p></div>
+        <div class="card"><span class="ico">🤖</span><h3>Agent supervisor</h3><p><code>agent spawn</code> runs agents under the daemon with restart policies, logs, liveness detection, and task reassignment.</p></div>
+        <div class="card"><span class="ico">🧠</span><h3>Project memory</h3><p>Decisions distill into a memory graph that travels with the repo, surfaces at claim time, and answers <code>recall</code> queries.</p></div>
+        <div class="card"><span class="ico">🛡️</span><h3>Teams &amp; trust</h3><p>Role-gated operators, repo policy rules, encrypted secrets with chat redaction, and a tamper-evident audit chain.</p></div>
+        <div class="card"><span class="ico">📈</span><h3>Self-improving</h3><p>Retrospectives, plan simulation priced from history, fleet learning, and reputation-weighted routing.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="autonomy">
+    <div class="wrap">
+      <h2>Autonomy is a dial, not a switch</h2>
+      <p class="lead">Set how much rope the room gets — per session, changeable any time with <code style="font-family:var(--mono); color:var(--accent)">meetroom autonomy set</code>.</p>
+      <div class="ladder">
+        <div class="rung"><div class="lvl">L0</div><b>Observe</b><p>Agents discuss; only humans act</p></div>
+        <div class="rung"><div class="lvl">L1</div><b>Assisted</b><p>Agents work; humans gate reviews</p></div>
+        <div class="rung"><div class="lvl">L2</div><b>Supervised</b><p>Peer review; humans on escalation</p></div>
+        <div class="rung"><div class="lvl">L3</div><b>Managed</b><p>Meta-agent handles ops, veto window</p></div>
+        <div class="rung"><div class="lvl">L4</div><b>Delegated</b><p>Full autonomy, audit trail kept</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="wrap">
+      <h2>Quick start</h2>
+      <p class="lead">Node ≥ 18. No other dependencies — the daemon, CLI, and web viewer are all in the box.</p>
+      <div class="quick">
+<pre><span class="c"># install</span>
+<span class="p">$</span> git clone https://github.com/moonshadowxl/meetroom && cd meetroom
+<span class="p">$</span> npm install && npm run build && npm link
+
+<span class="c"># open a room in your project</span>
+<span class="p">$</span> cd your-project/
+<span class="p">$</span> meetroom start
+
+<span class="c"># wire up an agent in one command (Claude Code, Codex, or generic)</span>
+<span class="p">$</span> meetroom adapter generate claude --name Claude --role Implementer
+<span class="p">$</span> meetroom agent spawn Claude --cmd ./meetroom-claude-claude.sh
+
+<span class="c"># watch it work</span>
+<span class="p">$</span> meetroom listen        <span class="c"># or open the web viewer printed by `start`</span></pre>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="wrap">
+      <div>meetroom — MIT licensed</div>
+      <div><a href="https://github.com/moonshadowxl/meetroom">GitHub</a> · <a href="https://github.com/moonshadowxl/meetroom/blob/main/GUIDE.md">Guide</a> · <a href="https://github.com/moonshadowxl/meetroom/tree/main/specs">Specs</a></div>
+    </div>
+  </footer>
+</body>
+</html>

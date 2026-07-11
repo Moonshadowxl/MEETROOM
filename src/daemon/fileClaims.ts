@@ -29,6 +29,7 @@ export function claimFile(
   if (existing) {
     if (existing.agentId === agentId) {
       existing.lastActivityAt = now();
+      if (timeoutMinutes !== undefined) existing.timeoutMinutes = timeoutMinutes;
       reg.save(session);
       return { ok: true, granted: true };
     }

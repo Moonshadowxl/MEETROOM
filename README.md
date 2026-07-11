@@ -105,7 +105,7 @@ Run `meetroom help` for the full list. Highlights by area:
 
 **V8 — self-improving org:** autonomy levels L0–L4 (`autonomy set`; L0 = agents discuss but don't act) · meta-agent operator (`MEETROOM_OPERATOR` handles attention items at L3+ behind a veto window; `veto <action-id>`) · retrospective engine (auto-generated at session end with config suggestions; `retro`) · plan simulation with cost/time estimates from history (`simulate`) · opt-in fleet learning · self-healing detectors (blocked-board deadlocks, claim cycles, post-done CI regressions) · outcome verification (`task create --verify "<cmd>"` + `verify run` gates done) · epics spanning sessions (`epic create/status`, `task create --epic`).
 
-**Lifecycle & operations (post-V8):** full task lifecycle (`task show/assign/drop/edit/cancel`, cancelling voids dependencies and unblocks dependents; reopen with `task move <id> todo`) · proposal veto/withdraw (`reject`, also a button in the web viewer) · graceful daemon shutdown (`meetroom stop`) · environment diagnostics (`meetroom doctor`: daemon, lock, agent contexts, orphaned worktrees, `.meetroom` JSON health) · live SSE web viewer (updates push instantly; polling is only a fallback) · append-only event log (`<id>.events.ndjson` beside each session snapshot — O(1) event writes, snapshots stay lean) · replay-protected inbound webhooks (signature covers `ts.text`, 5-minute freshness window) · once operators are configured, speaking as the human requires an operator key.
+**Lifecycle & operations (post-V8):** full task lifecycle (`task show/assign/drop/edit/cancel`, cancelling voids dependencies and unblocks dependents; reopen with `task move <id> todo`) · proposal veto/withdraw (`reject`, also a button in the web viewer) · graceful daemon shutdown (`meetroom stop`) · environment diagnostics (`meetroom doctor`: daemon, lock, agent contexts, orphaned worktrees, `.meetroom` JSON health) · live SSE web viewer (updates push instantly; polling is only a fallback) · append-only event log (`<id>.events.ndjson` beside each session snapshot — O(1) event writes, snapshots stay lean) · replay-protected inbound webhooks (signature covers `ts.text`, 5-minute freshness window, each signature accepted once) · once operators are configured, speaking as the human requires an operator key · votes and objections must come from joined agents (no ballot stuffing) · SSE streams for remote sessions authenticate via `?token=` (EventSource can't set headers).
 
 The V4–V8 specs live in [`specs/`](specs/); the deep-dive usage manual is [`GUIDE.md`](GUIDE.md). Not implemented from the specs (documented there as bigger lifts): the V6 hosted relay, tree-sitter symbol claims (line ranges shipped instead), and the V7 IDE extension.
 
@@ -136,11 +136,23 @@ meetroom join --sxl <id> --name "Cloud-1" --role Tester \
 meetroom notify configure --slack-webhook https://hooks.slack.com/...   # escalations reach you anywhere
 ```
 
+## Landing page (deploy on Vercel)
+
+A static landing page lives in [`landing/`](landing/), and the repo ships a `vercel.json` that serves it as-is (no build step). To publish:
+
+```sh
+npm i -g vercel
+vercel           # from the repo root; accept the defaults
+vercel --prod    # promote to production
+```
+
+Or connect the GitHub repo at [vercel.com/new](https://vercel.com/new) — the included config makes Vercel serve `landing/` statically. Note the daemon itself is a long-lived local process and is *not* deployable to Vercel; only the landing page is.
+
 ## Development
 
 ```sh
 npm run build   # tsc → dist/
-npm test        # builds, then node --test (80 tests: claims, resolution, tasks/gates, sessions, HTTP e2e)
+npm test        # builds, then node --test (91 tests: claims, resolution, tasks/gates, sessions, HTTP e2e, regressions)
 ```
 
 Layout follows the spec: `src/daemon/` (state + rules), `src/cli/` (command router + thin HTTP client), `src/web/` (no-build viewer), `src/shared/` (types + roles), `tests/`.

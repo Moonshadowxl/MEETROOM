@@ -137,10 +137,17 @@ export function recallMemory(cwd: string, query: string, limit = 8): { node: Mem
     .slice(0, limit);
 }
 
+/** One path is the other, or a suffix of it at a path-segment boundary — so
+ *  "a.ts" matches "src/a.ts" but not "data.ts". */
+export function pathTailMatches(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return long === short || long.endsWith(`/${short}`);
+}
+
 /** Memory that mentions a file — surfaced at claim time, when it matters most. */
 export function memoryForFile(cwd: string, filepath: string): MemoryNode[] {
   return activeMemoryNodes(cwd)
-    .filter((n) => n.links.files?.some((f) => f === filepath || filepath.endsWith(f) || f.endsWith(filepath)))
+    .filter((n) => n.links.files?.some((f) => pathTailMatches(f, filepath)))
     .slice(0, 5);
 }
 

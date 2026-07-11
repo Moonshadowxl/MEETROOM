@@ -234,7 +234,8 @@ function connectStream() {
   if (!sessionId || sessionId === sseSessionId) return;
   if (eventSource) eventSource.close();
   sseSessionId = sessionId;
-  eventSource = new EventSource(`/api/sessions/${sessionId}/events`);
+  // EventSource can't set headers, so remote-session auth rides the query string.
+  eventSource = new EventSource(`/api/sessions/${sessionId}/events${token ? `?token=${encodeURIComponent(token)}` : ""}`);
   eventSource.addEventListener("chat", scheduleRefresh);
   eventSource.addEventListener("event", scheduleRefresh);
   eventSource.onerror = () => {

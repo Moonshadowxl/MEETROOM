@@ -193,6 +193,9 @@ export function moveTask(
   const task = session.tasks.find((t) => t.id === taskId);
   if (!task) return { ok: false, error: "no such task" };
   if (!VALID_STATUSES.includes(status)) return { ok: false, error: `invalid status "${status}"` };
+  // Idempotent: re-moving a task to its current status must not repeat side
+  // effects (a second done→done would double-count reputation and fleet stats).
+  if (task.status === status) return { ok: true, status };
 
   if (status === "in-progress") {
     const unmet = unmetDependencies(session, task);
