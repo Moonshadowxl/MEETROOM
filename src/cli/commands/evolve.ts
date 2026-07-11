@@ -74,11 +74,13 @@ export async function cmdIntegration(parsed: Parsed): Promise<void> {
   const secret = parsed.flags.secret as string;
   if (!secret) fail("--secret required (the sender signs message text with HMAC-SHA256 using it)");
   await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/integrations`, { source, secret });
-  const example = createHmac("sha256", secret).update("hello room").digest("hex");
+  const ts = new Date().toISOString();
+  const example = createHmac("sha256", secret).update(`${ts}.hello room`).digest("hex");
   console.log(`integration "${source}" configured. Senders POST:`);
   console.log(`  http://<daemon>:${ctx.port}/api/sessions/${ctx.sessionId}/inbound`);
-  console.log(`  {"source":"${source}","author":"dana","text":"hello room","signature":"<hmac-sha256(text, secret)>"}`);
-  console.log(`  (example signature for "hello room": ${example})`);
+  console.log(`  {"source":"${source}","author":"dana","text":"hello room","ts":"<ISO-8601 now>","signature":"<hmac-sha256(\`\${ts}.\${text}\`, secret)>"}`);
+  console.log(`  ts must be within 5 minutes of the daemon clock (replay protection).`);
+  console.log(`  (example for text "hello room" at ts ${ts}: ${example})`);
 }
 
 // ---- V7 #4 — GitHub issue sync (label-scoped, one-shot) -----------------------------------

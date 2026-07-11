@@ -11,6 +11,9 @@ import { linkTaskToEpic, recordFleetStat } from "./evolve.js";
 // V2 #1 — task board: agents claim *work*, not just paths. File claims stay
 // the low-level primitive underneath.
 
+// "cancelled" is deliberately absent: tasks are cancelled only through
+// cancelTask (which also voids dependency references), never via move.
+// A cancelled task can be reopened with `task move <id> todo`.
 const VALID_STATUSES: TaskStatus[] = ["todo", "in-progress", "review", "done", "blocked"];
 
 export function createTask(
@@ -70,6 +73,9 @@ export function claimTask(
 ): { ok: boolean; error?: string; queuedFiles?: string[] } {
   const task = session.tasks.find((t) => t.id === taskId);
   if (!task) return { ok: false, error: "no such task" };
+  if (task.status === "done" || task.status === "cancelled") {
+    return { ok: false, error: `task is ${task.status}` };
+  }
   if (task.assignedAgentId && task.assignedAgentId !== agentId) {
     return { ok: false, error: `task already assigned to ${task.assignedAgentId}` };
   }
@@ -83,6 +89,86 @@ export function claimTask(
   task.updatedAt = now();
   reg.event(session, "task-claimed", agentId, { taskId });
   return { ok: true, queuedFiles: queuedFiles.length ? queuedFiles : undefined };
+}
+
+/** Assign (or, with assignee undefined, unassign) a task without file auto-claim. */
+export function assignTask(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  assigneeAgentId: string | undefined,
+  actorAgentId?: string
+): { ok: boolean; error?: string } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  if (task.status === "done" || task.status === "cancelled") return { ok: false, error: `task is ${task.status}` };
+  if (assigneeAgentId && !session.agents.some((a) => a.id === assigneeAgentId)) {
+    return { ok: false, error: "no such agent in the room" };
+  }
+  const previous = task.assignedAgentId;
+  task.assignedAgentId = assigneeAgentId;
+  if (assigneeAgentId) task.claimedAt = now();
+  else if (previous) task.reassignedFrom = [...(task.reassignedFrom ?? []), previous];
+  task.updatedAt = now();
+  reg.event(session, assigneeAgentId ? "task-assigned" : "task-dropped", actorAgentId, { taskId, assignee: assigneeAgentId, previous });
+  return { ok: true };
+}
+
+/** Edit a task's mutable fields. Gates and history stay untouched. */
+export function editTask(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  patch: { title?: string; description?: string; files?: string[]; verify?: { command: string; timeoutSeconds?: number } | null },
+  agentId?: string
+): { ok: boolean; error?: string; task?: Task } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  if (task.status === "done" || task.status === "cancelled") return { ok: false, error: `task is ${task.status} — reopen it first` };
+  if (patch.title !== undefined) {
+    if (!String(patch.title).trim()) return { ok: false, error: "title cannot be empty" };
+    task.title = String(patch.title);
+  }
+  if (patch.description !== undefined) task.description = String(patch.description);
+  if (patch.files !== undefined) task.files = patch.files;
+  if (patch.verify !== undefined) task.verify = patch.verify ?? undefined; // null clears the goal test
+  task.estimatedComplexity = estimateComplexity(task);
+  task.updatedAt = now();
+  reg.event(session, "task-edited", agentId, { taskId, fields: Object.keys(patch) });
+  return { ok: true, task };
+}
+
+/**
+ * Cancel a task: it keeps its record (status "cancelled") but stops blocking
+ * anything — its id is removed from every other task's dependsOn, and tasks
+ * that were blocked only on it pop back to todo.
+ */
+export function cancelTask(
+  reg: Registry,
+  session: Session,
+  taskId: string,
+  agentId?: string
+): { ok: boolean; error?: string } {
+  const task = session.tasks.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: "no such task" };
+  if (task.status === "done") return { ok: false, error: "task is done — nothing to cancel" };
+  if (task.status === "cancelled") return { ok: false, error: "task is already cancelled" };
+  task.status = "cancelled";
+  task.assignedAgentId = undefined;
+  task.updatedAt = now();
+  for (const t of session.tasks) {
+    if (t.dependsOn?.includes(taskId)) t.dependsOn = t.dependsOn.filter((d) => d !== taskId);
+  }
+  reg.event(session, "task-cancelled", agentId, { taskId, title: task.title });
+  reg.notice(session, `task ${task.id} ("${task.title}") cancelled`);
+  for (const t of session.tasks) {
+    if (t.status === "blocked" && unmetDependencies(session, t).length === 0) {
+      t.status = "todo";
+      t.updatedAt = now();
+      reg.notice(session, `task ${t.id} ("${t.title}") is unblocked — its dependency was cancelled`);
+    }
+  }
+  return { ok: true };
 }
 
 export function unmetDependencies(session: Session, task: Task): string[] {

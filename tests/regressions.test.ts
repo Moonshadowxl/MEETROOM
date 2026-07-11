@@ -176,7 +176,8 @@ test("session state redacts the session token and integration secrets", async ()
   assert.deepEqual(state.data.session.integrations, [{ source: "ci" }]);
 
   // The redacted secret still validates inbound HMACs.
-  const signature = createHmac("sha256", "hush").update("build green").digest("hex");
-  const inbound = await call("POST", `/api/sessions/${id}/inbound`, { source: "ci", text: "build green", signature });
+  const ts = new Date().toISOString();
+  const signature = createHmac("sha256", "hush").update(`${ts}.build green`).digest("hex");
+  const inbound = await call("POST", `/api/sessions/${id}/inbound`, { source: "ci", text: "build green", ts, signature });
   assert.equal(inbound.status, 200);
 });

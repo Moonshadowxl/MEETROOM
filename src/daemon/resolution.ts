@@ -83,6 +83,32 @@ export function resolveProposal(
   return { ok: true, status: p.status };
 }
 
+/**
+ * Reject a proposal outright. The human can reject any non-terminal proposal
+ * (the missing half of force-resolve); the author can reject their own
+ * proposal to withdraw it, but only before it reaches voting/escalated.
+ */
+export function rejectProposal(
+  reg: Registry,
+  session: Session,
+  proposalId: string,
+  agentId: string,
+  reason?: string
+): { ok: boolean; status?: Proposal["status"]; error?: string } {
+  const p = session.proposals.find((x) => x.id === proposalId);
+  if (!p) return { ok: false, error: "no such proposal" };
+  if (p.status === "resolved" || p.status === "rejected") return { ok: false, error: `proposal already ${p.status}` };
+  if (agentId !== "human") {
+    if (p.authorId !== agentId) return { ok: false, error: "only the author (withdraw) or the human can reject" };
+    if (p.status === "voting" || p.status === "escalated") {
+      return { ok: false, error: `proposal is ${p.status} — only the human can reject it now` };
+    }
+  }
+  if (reason) reg.chat(session, { agentId, message: `[rejecting ${p.id}] ${reason}` });
+  finishProposal(reg, session, p, "rejected");
+  return { ok: true, status: p.status };
+}
+
 function activeAgents(session: Session) {
   return session.agents.filter((a) => a.status === "active" || a.status === "waiting" || a.status === "idle");
 }

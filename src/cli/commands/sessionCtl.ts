@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Session } from "../../shared/types.js";
-import { api, baseUrl, fail, requireContext, resolveAgentId, type Parsed } from "../client.js";
+import { api, baseUrl, DEFAULT_PORT, fail, readLock, requireContext, resolveAgentId, type Parsed } from "../client.js";
 
 // Session lifecycle + observability commands: pause/resume/end (V2 #7),
 // export (V2 #10), fork/compare (V3 #8), rollback (V3 #9), listen (SSE),
@@ -28,6 +28,23 @@ export async function cmdEnd(parsed: Parsed): Promise<void> {
   const data = await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/end`);
   console.log(`session ${ctx.sessionId} ended`);
   console.log(`project memory now holds ${data.memory.decisions.length} decisions (.meetroom/memory.json)`);
+}
+
+/** Gracefully shut the daemon down (stops runners, persists, exits). */
+export async function cmdStop(parsed: Parsed): Promise<void> {
+  const lock = readLock();
+  const host = (parsed.flags.host as string) ?? lock?.host ?? "127.0.0.1";
+  const port = parsed.flags.port ? Number(parsed.flags.port) : lock?.port ?? Number(process.env.MEETROOM_PORT ?? DEFAULT_PORT);
+  const scheme = parsed.flags.https || process.env.MEETROOM_SCHEME === "https" ? ("https" as const) : lock?.scheme;
+  try {
+    const res = await fetch(`${baseUrl({ host, port, scheme })}/api/health`, { signal: AbortSignal.timeout(1500) });
+    if (!res.ok) throw new Error();
+  } catch {
+    console.log(`no meetroom daemon running on ${host}:${port}`);
+    return;
+  }
+  const data = await api({ host, port, scheme }, "POST", "/api/shutdown");
+  console.log(`daemon (pid ${data.pid}) is shutting down — runners stopped, sessions persisted`);
 }
 
 export async function cmdExport(parsed: Parsed): Promise<void> {

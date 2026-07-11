@@ -78,11 +78,11 @@ Run `meetroom help` for the full list. Highlights by area:
 
 | Area | Commands |
 |---|---|
-| Room | `start` `join` `leave` `status` `sessions` `brief` `pause` `resume` `end` |
+| Room | `start` `join` `leave` `status` `sessions` `brief` `pause` `resume` `end` `stop` `doctor` |
 | Chat | `say` `prompt-all` `prompt @agent` `pair` `listen` `inbox` |
 | Files | `claim [--wait]` `release` `touch` |
-| Tasks | `task create/claim/move` `board` `plan` (draft board from a feature description, requires approval) |
-| Decisions | `propose` `object` `resolve` `vote` |
+| Tasks | `task create/claim/move/show/assign/drop/edit/cancel` `board` `plan` (draft board from a feature description, requires approval) |
+| Decisions | `propose` `object` `resolve` `reject` `vote` |
 | Review | `review submit/approve/request-changes/comment/show/pr-sync` `test report` `ci report` |
 | Ops | `export` `fork` `compare` `rollback` `sandbox` `usage` `memory` `reputation` |
 | Extend | `plugin install/list/run` `notify configure` `guild create/list` `roles` |
@@ -104,6 +104,8 @@ Run `meetroom help` for the full list. Highlights by area:
 **V7 — ecosystem:** agent adapter kit (`adapter generate claude|codex|generic`) · plugin permission manifests (dangerous permissions need `--confirm`) · HMAC-signed inbound webhooks (`integration add` → external systems post into room chat) · GitHub issue sync (`sync github --repo o/n --label meetroom`) · interactive web viewer (approve/resolve/pause/prompt from the browser with an operator key) · OpenAPI contract generated from the live route table (`/api/openapi.json`) · blueprint bundles (`bundle export/import`).
 
 **V8 — self-improving org:** autonomy levels L0–L4 (`autonomy set`; L0 = agents discuss but don't act) · meta-agent operator (`MEETROOM_OPERATOR` handles attention items at L3+ behind a veto window; `veto <action-id>`) · retrospective engine (auto-generated at session end with config suggestions; `retro`) · plan simulation with cost/time estimates from history (`simulate`) · opt-in fleet learning · self-healing detectors (blocked-board deadlocks, claim cycles, post-done CI regressions) · outcome verification (`task create --verify "<cmd>"` + `verify run` gates done) · epics spanning sessions (`epic create/status`, `task create --epic`).
+
+**Lifecycle & operations (post-V8):** full task lifecycle (`task show/assign/drop/edit/cancel`, cancelling voids dependencies and unblocks dependents; reopen with `task move <id> todo`) · proposal veto/withdraw (`reject`, also a button in the web viewer) · graceful daemon shutdown (`meetroom stop`) · environment diagnostics (`meetroom doctor`: daemon, lock, agent contexts, orphaned worktrees, `.meetroom` JSON health) · live SSE web viewer (updates push instantly; polling is only a fallback) · append-only event log (`<id>.events.ndjson` beside each session snapshot — O(1) event writes, snapshots stay lean) · replay-protected inbound webhooks (signature covers `ts.text`, 5-minute freshness window) · once operators are configured, speaking as the human requires an operator key.
 
 The V4–V8 specs live in [`specs/`](specs/); the deep-dive usage manual is [`GUIDE.md`](GUIDE.md). Not implemented from the specs (documented there as bigger lifts): the V6 hosted relay, tree-sitter symbol claims (line ranges shipped instead), and the V7 IDE extension.
 
@@ -138,7 +140,7 @@ meetroom notify configure --slack-webhook https://hooks.slack.com/...   # escala
 
 ```sh
 npm run build   # tsc → dist/
-npm test        # builds, then node --test (36 tests: claims, resolution, tasks/gates, sessions, HTTP e2e)
+npm test        # builds, then node --test (80 tests: claims, resolution, tasks/gates, sessions, HTTP e2e)
 ```
 
 Layout follows the spec: `src/daemon/` (state + rules), `src/cli/` (command router + thin HTTP client), `src/web/` (no-build viewer), `src/shared/` (types + roles), `tests/`.

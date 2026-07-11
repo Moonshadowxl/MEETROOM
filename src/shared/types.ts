@@ -47,7 +47,7 @@ export type Proposal = {
   resolvedAt?: string;
 };
 
-export type TaskStatus = "todo" | "in-progress" | "review" | "done" | "blocked";
+export type TaskStatus = "todo" | "in-progress" | "review" | "done" | "blocked" | "cancelled";
 
 // V2 #1 — task board
 export type Task = {

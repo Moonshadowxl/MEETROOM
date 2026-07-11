@@ -128,12 +128,22 @@ test("inbound integration requires a valid HMAC signature", async () => {
   const id = data.session.id;
   await call("POST", `/api/sessions/${id}/integrations`, { source: "slack", secret: "shh" });
 
-  const badSig = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", signature: "nope" });
+  const ts = new Date().toISOString();
+  const badSig = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", ts, signature: "nope" });
   assert.equal(badSig.status, 403);
 
-  const signature = createHmac("sha256", "shh").update("ship it").digest("hex");
-  const good = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", signature });
+  const signature = createHmac("sha256", "shh").update(`${ts}.ship it`).digest("hex");
+  const good = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", ts, signature });
   assert.equal(good.status, 200);
+
+  // Replay protection: a correctly signed but stale request is rejected.
+  const oldTs = new Date(Date.now() - 10 * 60_000).toISOString();
+  const staleSig = createHmac("sha256", "shh").update(`${oldTs}.ship it`).digest("hex");
+  const stale = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", ts: oldTs, signature: staleSig });
+  assert.equal(stale.status, 403);
+  // ...and ts is mandatory.
+  const noTs = await call("POST", `/api/sessions/${id}/inbound`, { source: "slack", author: "dana", text: "ship it", signature });
+  assert.equal(noTs.status, 400);
   const state = await call("GET", `/api/sessions/${id}/state`);
   assert.ok(state.data.session.chatLog.some((m: any) => m.message.includes("[slack] dana: ship it")));
 });

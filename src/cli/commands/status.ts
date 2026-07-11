@@ -54,6 +54,7 @@ export async function cmdBoard(parsed: Parsed): Promise<void> {
     { key: "blocked", label: "BLOCKED" },
     { key: "done", label: "DONE" },
   ];
+  if (s.tasks.some((t) => t.status === "cancelled")) columns.push({ key: "cancelled", label: "CANCELLED" });
   console.log(`task board — session ${s.id}${s.status === "paused" ? " (PAUSED)" : ""}`);
   for (const col of columns) {
     const tasks = s.tasks.filter((t) => t.status === col.key);

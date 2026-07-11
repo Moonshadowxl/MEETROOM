@@ -5,7 +5,8 @@ import { cmdSay, cmdPrompt, cmdPromptAll } from "./commands/say.js";
 import { cmdClaim, cmdTouch } from "./commands/claim.js";
 import { cmdRelease } from "./commands/release.js";
 import { cmdStatus, cmdBoard, cmdBrief, cmdSessions, cmdInbox } from "./commands/status.js";
-import { cmdPropose, cmdObject, cmdResolve, cmdVote } from "./commands/propose.js";
+import { cmdPropose, cmdObject, cmdReject, cmdResolve, cmdVote } from "./commands/propose.js";
+import { cmdDoctor } from "./commands/doctor.js";
 import { cmdTask, cmdTest, cmdCI } from "./commands/task.js";
 import { cmdReview } from "./commands/review.js";
 import {
@@ -19,6 +20,7 @@ import {
   cmdListen,
   cmdPair,
   cmdSandbox,
+  cmdStop,
 } from "./commands/sessionCtl.js";
 import {
   cmdUsage,
@@ -67,6 +69,8 @@ room
   leave · sessions · status · brief · listen · inbox [--since <ts>]
   pause · resume · end · fork · compare <a> <b> · rollback [--yes]
   export [session-id] --format md|json
+  stop                          gracefully shut the daemon down
+  doctor                        diagnose daemon/lock/agent/worktree problems
 
 chat
   say "<msg>" [--as <agent>]
@@ -78,9 +82,12 @@ files & tasks
   claim <file> [--wait] · release <file> · touch <file>
   task create "<title>" [--files a,b] [--depends-on id,id] [--requires-ci] [--requires-tests]
   task claim <id> · task move <id> <status> · board
+  task show <id> · task assign <id> <agent> · task drop <id>
+  task edit <id> [--title|--description|--files|--verify] · task cancel <id>
 
 decisions
   propose "<plan>" · object <id> "<reason>" · resolve <id> ["response"] · vote <id> yes|no
+  reject <id> ["reason"]        human veto, or author withdraw before voting
 
 review gate
   review submit <task-id> [--confidence low|medium|high] [--pr]
@@ -191,6 +198,8 @@ async function main(): Promise<void> {
       return cmdObject(parsed);
     case "resolve":
       return cmdResolve(parsed);
+    case "reject":
+      return cmdReject(parsed);
     case "vote":
       return cmdVote(parsed);
     case "task":
@@ -201,6 +210,10 @@ async function main(): Promise<void> {
       return cmdCI(parsed);
     case "review":
       return cmdReview(parsed);
+    case "stop":
+      return cmdStop(parsed);
+    case "doctor":
+      return cmdDoctor(parsed);
     case "pause":
       return cmdPause(parsed);
     case "resume":

@@ -58,6 +58,7 @@ async function loadSessionList() {
     const url = new URL(location.href);
     url.searchParams.set("session", sessionId);
     history.replaceState(null, "", url);
+    connectStream();
     refresh();
   };
 }
@@ -114,11 +115,17 @@ function render(session) {
     head.textContent = `[${p.status}] ${p.content}`;
     card.appendChild(head);
     card.appendChild(el("div", "meta", `${p.id} · by ${agentName(session, p.authorId)} · ${p.objections.length} objections${p.votes ? ` · votes: ${p.votes.filter((v) => v.vote === "yes").length}y/${p.votes.filter((v) => v.vote === "no").length}n` : ""}`));
-    if (p.status === "escalated" || p.status === "open" || p.status === "contested") {
+    if (p.status === "escalated" || p.status === "open" || p.status === "contested" || p.status === "voting") {
       const actions = el("div", "actions");
       const resolveBtn = el("button", "btn approve", "resolve");
       resolveBtn.onclick = () => act("POST", `/api/sessions/${session.id}/proposals/${p.id}/resolve`, { agentId: "human" });
+      const rejectBtn = el("button", "btn reject", "reject");
+      rejectBtn.onclick = () => {
+        const reason = prompt("why reject? (optional)") || undefined;
+        act("POST", `/api/sessions/${session.id}/proposals/${p.id}/reject`, { agentId: "human", reason });
+      };
       actions.appendChild(resolveBtn);
+      actions.appendChild(rejectBtn);
       card.appendChild(actions);
     }
     proposals.appendChild(card);
@@ -126,7 +133,9 @@ function render(session) {
 
   const board = document.getElementById("board");
   board.replaceChildren();
-  for (const lane of ["todo", "in-progress", "review", "blocked", "done"]) {
+  const lanes = ["todo", "in-progress", "review", "blocked", "done"];
+  if (session.tasks.some((t) => t.status === "cancelled")) lanes.push("cancelled");
+  for (const lane of lanes) {
     const laneEl = el("div", "lane");
     laneEl.appendChild(el("h3", "", lane));
     const tasks = session.tasks.filter((t) => t.status === lane);
@@ -208,6 +217,31 @@ async function refresh() {
   }
 }
 
+// Live updates over the daemon's SSE stream: any chat/event triggers a
+// (debounced) refresh, so the viewer reacts instantly instead of waiting for
+// the next poll. The slow poll below stays as a fallback for dropped streams.
+let eventSource = null;
+let sseSessionId = null;
+let refreshTimer = null;
+function scheduleRefresh() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    refresh();
+  }, 150);
+}
+function connectStream() {
+  if (!sessionId || sessionId === sseSessionId) return;
+  if (eventSource) eventSource.close();
+  sseSessionId = sessionId;
+  eventSource = new EventSource(`/api/sessions/${sessionId}/events`);
+  eventSource.addEventListener("chat", scheduleRefresh);
+  eventSource.addEventListener("event", scheduleRefresh);
+  eventSource.onerror = () => {
+    // Browser auto-reconnects; the fallback poll covers the gap.
+  };
+}
+
 // Operator key (V6/V7): stored locally, sent on every request.
 const opKeyInput = document.getElementById("op-key");
 opKeyInput.value = localStorage.getItem("meetroom-operator-key") || "";
@@ -222,6 +256,14 @@ document.getElementById("prompt-box").addEventListener("keydown", (e) => {
   act("POST", `/api/sessions/${sessionId}/say`, { agentId: "human", message });
 });
 
-loadSessionList().then(refresh);
-setInterval(refresh, 2000);
+loadSessionList().then(() => {
+  refresh();
+  connectStream();
+});
+// Fallback poll (SSE does the heavy lifting); also re-binds the stream after
+// a session switch from the picker.
+setInterval(() => {
+  connectStream();
+  refresh();
+}, 10000);
 setInterval(loadSessionList, 15000);

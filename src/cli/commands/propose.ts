@@ -31,6 +31,22 @@ export async function cmdResolve(parsed: Parsed): Promise<void> {
   console.log(`proposal ${proposalId} is now: ${data.status}`);
 }
 
+/**
+ * Reject a proposal. As the human: veto any open/contested/voting/escalated
+ * proposal. As the author: withdraw your own (before it reaches a vote).
+ */
+export async function cmdReject(parsed: Parsed): Promise<void> {
+  const [proposalId, ...rest] = parsed.positional;
+  if (!proposalId) fail('usage: meetroom reject <proposal-id> ["reason"]');
+  const ctx = requireContext(parsed.flags);
+  const agentId = resolveAgentId(parsed.flags);
+  await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/proposals/${proposalId}/reject`, {
+    agentId,
+    reason: rest.join(" ") || undefined,
+  });
+  console.log(`proposal ${proposalId} rejected`);
+}
+
 /** V2 #9 — voting. */
 export async function cmdVote(parsed: Parsed): Promise<void> {
   const [proposalId, vote] = parsed.positional;

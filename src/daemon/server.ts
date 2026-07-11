@@ -1,13 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin, Session, SessionType } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import { Registry } from "./registry.js";
 import { claimFile, claimLines, releaseAgentPresence, releaseFile, releaseLines, sweepClaimTimeouts, touchClaim } from "./fileClaims.js";
-import { createProposal, objectToProposal, resolveProposal, sweepProposalTimeouts, voteOnProposal } from "./resolution.js";
-import { claimTask, createTask, moveTask, reportCIStatus, reportTestResult } from "./tasks.js";
+import { createProposal, objectToProposal, rejectProposal, resolveProposal, sweepProposalTimeouts, voteOnProposal } from "./resolution.js";
+import { assignTask, cancelTask, claimTask, createTask, editTask, moveTask, reportCIStatus, reportTestResult } from "./tasks.js";
 import { commentOnReview, decideReview, submitReview, syncPrStatus } from "./reviews.js";
 import { subscribe, wireBroadcast } from "./broadcast.js";
 import { wireNotifications } from "./notify.js";
@@ -213,6 +213,25 @@ export function buildServer(reg: Registry) {
   const routes: Route[] = [
     route("GET", "/api/health", (c) => json(c.res, 200, { ok: true, service: "meetroom", version: "3.0.0", pid: process.pid })),
 
+    // Graceful daemon shutdown (`meetroom stop`): stop every runner, persist,
+    // then exit. Operator-gated once operators exist; solo mode just works.
+    route("POST", "/api/shutdown", (c) => {
+      if (!requireOperator(c, "maintainer")) return;
+      json(c.res, 200, { ok: true, stopping: true, pid: process.pid });
+      setTimeout(() => {
+        for (const s of reg.sessions.values()) {
+          stopAllRunners(reg, s);
+          reg.save(s);
+        }
+        try {
+          rmSync(daemonInfoPath(), { force: true });
+        } catch {
+          // best-effort cleanup
+        }
+        process.exit(0);
+      }, 150).unref();
+    }),
+
     route("GET", "/api/sessions", (c) => {
       const list = [...reg.sessions.values()].map((s) => ({
         id: s.id,
@@ -337,6 +356,10 @@ export function buildServer(reg: Registry) {
       if (s.status === "ended") return bad(c.res, "session has ended", 410);
       const { agentId, message, to } = c.body;
       if (!agentId || !message) return bad(c.res, "agentId and message required");
+      // Once operators exist, speaking AS the human requires an operator key —
+      // otherwise any agent could impersonate the human's voice in the room.
+      // (Solo mode: no operators configured, no ceremony.)
+      if (agentId === "human" && !requireOperator(c, "reviewer")) return;
       let toAgentId: string | undefined;
       if (to) {
         const target = s.agents.find((a) => a.name === to || a.id === to);
@@ -472,6 +495,18 @@ export function buildServer(reg: Registry) {
 
     route(
       "POST",
+      "/api/sessions/:id/proposals/:pid/reject",
+      (c) => {
+        const s = withSession(c);
+        if (!s || !ensureWritable(s, c.res, c.body.agentId, true)) return;
+        const result = rejectProposal(reg, s, c.params.pid, c.body.agentId ?? "human", c.body.reason);
+        json(c.res, result.ok ? 200 : 409, result);
+      },
+      true
+    ),
+
+    route(
+      "POST",
       "/api/sessions/:id/proposals/:pid/vote",
       (c) => {
         const s = withSession(c);
@@ -516,6 +551,50 @@ export function buildServer(reg: Registry) {
         const s = withSession(c);
         if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
         const result = moveTask(reg, s, c.params.tid, c.body.status, c.body.agentId);
+        json(c.res, result.ok ? 200 : 409, result);
+      },
+      true
+    ),
+
+    route(
+      "POST",
+      "/api/sessions/:id/tasks/:tid/assign",
+      (c) => {
+        const s = withSession(c);
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        const { assignee } = c.body; // agent name or id; empty = unassign
+        let assigneeId: string | undefined;
+        if (assignee) {
+          const target = s.agents.find((a) => a.name === assignee || a.id === assignee);
+          if (!target) return bad(c.res, `no agent "${assignee}" in the room`, 404);
+          assigneeId = target.id;
+        }
+        const result = assignTask(reg, s, c.params.tid, assigneeId, c.body.agentId);
+        json(c.res, result.ok ? 200 : 409, result);
+      },
+      true
+    ),
+
+    route(
+      "POST",
+      "/api/sessions/:id/tasks/:tid/edit",
+      (c) => {
+        const s = withSession(c);
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        const { title, description, files, verify } = c.body;
+        const result = editTask(reg, s, c.params.tid, { title, description, files, verify }, c.body.agentId);
+        json(c.res, result.ok ? 200 : 409, result);
+      },
+      true
+    ),
+
+    route(
+      "POST",
+      "/api/sessions/:id/tasks/:tid/cancel",
+      (c) => {
+        const s = withSession(c);
+        if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
+        const result = cancelTask(reg, s, c.params.tid, c.body.agentId);
         json(c.res, result.ok ? 200 : 409, result);
       },
       true
@@ -924,17 +1003,24 @@ export function buildServer(reg: Registry) {
     }),
 
     // V7 #3 — external systems talk back: HMAC-signed messages land in chat.
+    // The signature covers `${ts}.${text}` and ts must be fresh, so a captured
+    // request can't be replayed later.
     route("POST", "/api/sessions/:id/inbound", (c) => {
       const s = reg.get(c.params.id); // signature IS the auth — no session token needed
       if (!s) return bad(c.res, "no such session", 404);
-      const { source, author, text, signature } = c.body;
+      const { source, author, text, ts, signature } = c.body;
       if (!source || !text) return bad(c.res, "source and text required");
+      if (!ts) return bad(c.res, "ts required (ISO-8601 or epoch ms; signature = HMAC-SHA256 of `${ts}.${text}`)");
       const integration = s.integrations.find((i) => i.source === source);
       if (!integration) return bad(c.res, `unknown integration source "${source}" — add it with \`meetroom integration add\``, 403);
-      const expected = createHmac("sha256", integration.secret).update(text).digest();
+      const sentAt = new Date(typeof ts === "number" ? ts : String(ts)).getTime();
+      if (!Number.isFinite(sentAt) || Math.abs(Date.now() - sentAt) > 5 * 60_000) {
+        return bad(c.res, "stale or invalid ts — must be within 5 minutes of the daemon clock", 403);
+      }
+      const expected = createHmac("sha256", integration.secret).update(`${ts}.${text}`).digest();
       const given = Buffer.from(String(signature ?? ""), "hex");
       if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
-        return bad(c.res, "bad signature (HMAC-SHA256 of the text with the shared secret)", 403);
+        return bad(c.res, "bad signature (HMAC-SHA256 of `${ts}.${text}` with the shared secret)", 403);
       }
       const msg = reg.chat(s, { agentId: "system", message: `[${source}] ${author ?? "someone"}: ${text}` });
       json(c.res, 200, { ok: true, message: msg });
