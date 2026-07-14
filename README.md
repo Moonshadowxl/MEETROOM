@@ -138,7 +138,7 @@ meetroom notify configure --slack-webhook https://hooks.slack.com/...   # escala
 
 ## Landing page (deploy on Vercel)
 
-A static landing page lives in [`landing/`](landing/), and the repo ships a `vercel.json` that serves it as-is (no build step). To publish:
+The landing page lives in [`landing/`](landing/) — a Vite + React + TypeScript app built with HeroUI. The repo ships a `vercel.json` that installs and builds it (`cd landing && npm install && npm run build`) and serves `landing/dist`. To develop it locally run `cd landing && npm install && npm run dev`; to publish:
 
 ```sh
 npm i -g vercel
