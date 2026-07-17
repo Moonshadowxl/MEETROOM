@@ -66,7 +66,7 @@ meetroom pair Claude                                        # live 1:1 lane
 
 ## Core rules
 
-1. **No file is edited without a claim.** `meetroom claim <file>` locks it; a second claimant is rejected — or queued FIFO with `--wait`, and auto-granted when the holder releases.
+1. **No file is edited without a claim.** `meetroom claim <file>` locks it; a second claimant is rejected — or queued FIFO with `--wait`, and auto-granted when the holder releases. `meetroom guard install` turns this from a convention into an enforced check: a git pre-commit hook (and, with `--claude`, a Claude Code PreToolUse hook) blocks agents from touching unclaimed files. Humans and non-meetroom workflows are never blocked — the guard only enforces when `MEETROOM_AGENT` identifies an agent and the daemon is reachable.
 2. **Claims time out.** Idle claims auto-release after 10 minutes (configurable via `meetroom start --claim-timeout M`) with a chat notice, and hand off to waiters.
 3. **Propose → object → resolve.** `meetroom propose "<plan>"` opens a decision. No objection within the window → auto-resolved. Objection → the author gets one response round, then: 3+ agents vote (majority wins, lead agent can tie-break), otherwise it **escalates to the human**.
 4. **Review gates done.** A task can't reach `review` without a submitted diff, and can't reach `done` without an approved review. Self-review is rejected by the daemon. `--confidence low` submissions require the *human* to approve.
@@ -80,7 +80,7 @@ Run `meetroom help` for the full list. Highlights by area:
 |---|---|
 | Room | `start` `join` `leave` `status` `sessions` `brief` `pause` `resume` `end` `stop` `doctor` |
 | Chat | `say` `prompt-all` `prompt @agent` `pair` `listen` `inbox` |
-| Files | `claim [--wait]` `release` `touch` |
+| Files | `claim [--wait]` `release` `touch` `guard install/uninstall/check` |
 | Tasks | `task create/claim/move/show/assign/drop/edit/cancel` `board` `plan` (draft board from a feature description, requires approval) |
 | Decisions | `propose` `object` `resolve` `reject` `vote` |
 | Review | `review submit/approve/request-changes/comment/show/pr-sync` `test report` `ci report` |
@@ -152,7 +152,7 @@ Or connect the GitHub repo at [vercel.com/new](https://vercel.com/new) — the i
 
 ```sh
 npm run build   # tsc → dist/
-npm test        # builds, then node --test (97 tests: claims, resolution, tasks/gates, sessions, HTTP e2e, regressions)
+npm test        # builds, then node --test (101 tests: claims, resolution, tasks/gates, guard, sessions, HTTP e2e, regressions)
 ```
 
 Layout follows the spec: `src/daemon/` (state + rules), `src/cli/` (command router + thin HTTP client), `src/web/` (no-build viewer), `src/shared/` (types + roles), `tests/`.

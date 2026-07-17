@@ -33,6 +33,7 @@ import {
   cmdReputation,
   cmdLeave,
 } from "./commands/misc.js";
+import { cmdGuard } from "./commands/guard.js";
 import { cmdAgent, cmdArtifact, cmdAttention, cmdBudget, cmdRoutine, cmdTemplate } from "./commands/ops.js";
 import { cmdAudit, cmdLogin, cmdOperator, cmdOrg, cmdPurge, cmdSecret } from "./commands/trust.js";
 import {
@@ -78,6 +79,8 @@ chat
 
 files & tasks
   claim <file> [--wait] · release <file> · touch <file>
+  guard install [--claude] · guard uninstall · guard check [--staged|<files...>]
+                                enforce "no edit without a claim" via git/Claude hooks
   task create "<title>" [--files a,b] [--depends-on id,id] [--requires-ci] [--requires-tests]
   task claim <id> · task move <id> <status> · board
   task show <id> · task assign <id> <agent> · task drop <id>
@@ -177,6 +180,8 @@ async function main(): Promise<void> {
       return cmdRelease(parsed);
     case "touch":
       return cmdTouch(parsed);
+    case "guard":
+      return cmdGuard(parsed);
     case "status":
       return cmdStatus(parsed);
     case "board":

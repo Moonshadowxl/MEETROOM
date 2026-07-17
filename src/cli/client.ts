@@ -166,6 +166,9 @@ const BOOLEAN_FLAGS = new Set([
   "requires-ci",
   "requires-tests",
   "require-pr-merge",
+  "claude",
+  "staged",
+  "hook-stdin",
 ]);
 
 /** `--flag value`, `--flag=value`, and bare `--flag` (boolean) forms. */
