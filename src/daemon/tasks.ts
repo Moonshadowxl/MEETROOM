@@ -33,6 +33,11 @@ export function createTask(
   for (const dep of opts.dependsOn ?? []) {
     if (!session.tasks.some((t) => t.id === dep)) return { ok: false, error: `unknown dependency task ${dep}` };
   }
+  // A bare `--verify` flag arrives as boolean true; a non-string command would
+  // only blow up much later, inside `meetroom verify run`.
+  if (opts.verify && (typeof opts.verify.command !== "string" || !opts.verify.command.trim())) {
+    return { ok: false, error: "verify.command must be a non-empty shell command" };
+  }
   const task: Task = {
     id: entityId("task"),
     title: opts.title,
@@ -131,7 +136,12 @@ export function editTask(
   }
   if (patch.description !== undefined) task.description = String(patch.description);
   if (patch.files !== undefined) task.files = patch.files;
-  if (patch.verify !== undefined) task.verify = patch.verify ?? undefined; // null clears the goal test
+  if (patch.verify !== undefined) {
+    if (patch.verify && (typeof patch.verify.command !== "string" || !patch.verify.command.trim())) {
+      return { ok: false, error: "verify.command must be a non-empty shell command" };
+    }
+    task.verify = patch.verify ?? undefined; // null clears the goal test
+  }
   task.estimatedComplexity = estimateComplexity(task);
   task.updatedAt = now();
   reg.event(session, "task-edited", agentId, { taskId, fields: Object.keys(patch) });
@@ -250,6 +260,10 @@ export function moveTask(
     task.doneAt = now();
   }
 
+  // Reopening a done task: the old completion timestamp must not survive into
+  // turnaround stats (retro/reputation) for the second pass.
+  if (task.status === "done" && status !== "done") task.doneAt = undefined;
+
   task.status = status;
   task.updatedAt = now();
   reg.event(session, "task-move", agentId, { taskId, status });
@@ -286,6 +300,9 @@ export function reportTestResult(
 ): { ok: boolean; error?: string } {
   const task = session.tasks.find((t) => t.id === taskId);
   if (!task) return { ok: false, error: "no such task" };
+  // Webhooks post here directly (the CLI validates, the API must too): a typo
+  // like "pased" must not be stored as a result the done-gate then rejects opaquely.
+  if (result !== "passed" && result !== "failed") return { ok: false, error: 'result must be "passed" or "failed"' };
   task.testResult = result;
   task.updatedAt = now();
   reg.event(session, "test-result", agentId, { taskId, result });
@@ -304,6 +321,7 @@ export function reportCIStatus(
 ): { ok: boolean; error?: string } {
   const task = session.tasks.find((t) => t.id === taskId);
   if (!task) return { ok: false, error: "no such task" };
+  if (!["pending", "passed", "failed"].includes(status)) return { ok: false, error: 'status must be "pending", "passed", or "failed"' };
   let ci = session.ciStatuses.find((c) => c.taskId === taskId);
   if (!ci) {
     ci = { taskId, provider, status, url, updatedAt: now() };

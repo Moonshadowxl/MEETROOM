@@ -194,5 +194,13 @@ export function sweepProposalTimeouts(reg: Registry, session: Session): void {
     if (p.status === "open" && p.objections.length === 0 && new Date(p.createdAt).getTime() < cutoff) {
       finishProposal(reg, session, p, "resolved");
     }
+    // A vote must not hang forever on one silent agent: after the window,
+    // tally whatever votes were cast (a tie — including zero votes — escalates).
+    if (p.status === "voting") {
+      const votingAt = session.events.find((e) => e.type === "proposal-voting" && e.data?.proposalId === p.id)?.ts;
+      if (votingAt && new Date(votingAt).getTime() < cutoff) {
+        tallyVotes(reg, session, p);
+      }
+    }
   }
 }

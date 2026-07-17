@@ -8,8 +8,8 @@ import { createHmac } from "node:crypto";
 import { Registry } from "../src/daemon/registry.js";
 import { buildServer } from "../src/daemon/server.js";
 import { claimFile, claimLines, releaseAgentPresence } from "../src/daemon/fileClaims.js";
-import { createProposal, objectToProposal, resolveProposal, voteOnProposal } from "../src/daemon/resolution.js";
-import { createTask } from "../src/daemon/tasks.js";
+import { createProposal, objectToProposal, resolveProposal, sweepProposalTimeouts, voteOnProposal } from "../src/daemon/resolution.js";
+import { createTask, moveTask, reportCIStatus, reportTestResult } from "../src/daemon/tasks.js";
 import { submitReview, decideReview } from "../src/daemon/reviews.js";
 import { cronMatches, spawnRunner, stopRunner } from "../src/daemon/ops.js";
 import { queueAction, sweepPendingActions } from "../src/daemon/evolve.js";
@@ -143,6 +143,87 @@ test("pending meta-agent actions do not execute while the room is paused", () =>
   session.status = "active";
   sweepPendingActions(reg, session);
   assert.equal(action.status, "executed");
+});
+
+test("reviews from unknown author ids are rejected (self-review bypass)", () => {
+  const { reg, session, agents } = setup(2);
+  const t = createTask(reg, session, { title: "x", files: [] });
+  assert.ok(t.ok);
+  const taskId = (t as any).task.id;
+
+  // The bypass: submit under an invented author, then approve as yourself.
+  const forged = submitReview(reg, session, { taskId, authorAgentId: "invented-author", diff: "diff --git a b" });
+  assert.equal(forged.ok, false);
+
+  // Legit authors (joined agents, or the human) still work.
+  assert.ok(submitReview(reg, session, { taskId, authorAgentId: agents[0].id, diff: "diff --git a b" }).ok);
+  assert.ok(submitReview(reg, session, { taskId, authorAgentId: "human", diff: "diff --git a b" }).ok);
+});
+
+test("a stalled vote is tallied after the objection window instead of hanging forever", () => {
+  const { reg, session, agents } = setup(3);
+  const p = createProposal(reg, session, agents[0].id, "split the module");
+  objectToProposal(reg, session, p.id, agents[1].id, "premature");
+  resolveProposal(reg, session, p.id, agents[0].id, "it's 3k lines");
+  assert.equal(p.status, "voting");
+  voteOnProposal(reg, session, p.id, agents[0].id, "yes");
+  voteOnProposal(reg, session, p.id, agents[1].id, "yes");
+  // agent-2 never votes. Sweep before the window: still voting.
+  sweepProposalTimeouts(reg, session);
+  assert.equal(p.status, "voting");
+  // Age the voting event past the window: majority of cast votes decides.
+  const votingEvent = session.events.find((e) => e.type === "proposal-voting" && e.data?.proposalId === p.id)!;
+  votingEvent.ts = new Date(Date.now() - (session.config.objectionTimeoutMinutes + 1) * 60_000).toISOString();
+  sweepProposalTimeouts(reg, session);
+  assert.equal(p.status, "resolved");
+});
+
+test("a stalled vote with no votes cast escalates to the human", () => {
+  const { reg, session, agents } = setup(3);
+  const p = createProposal(reg, session, agents[0].id, "risky thing");
+  objectToProposal(reg, session, p.id, agents[1].id, "no");
+  resolveProposal(reg, session, p.id, agents[0].id, "yes");
+  assert.equal(p.status, "voting");
+  const votingEvent = session.events.find((e) => e.type === "proposal-voting" && e.data?.proposalId === p.id)!;
+  votingEvent.ts = new Date(Date.now() - (session.config.objectionTimeoutMinutes + 1) * 60_000).toISOString();
+  sweepProposalTimeouts(reg, session);
+  assert.equal(p.status, "escalated");
+});
+
+test("test and CI reports reject values outside the allowed set", () => {
+  const { reg, session } = setup(1);
+  const t = createTask(reg, session, { title: "x", files: [] });
+  assert.ok(t.ok);
+  const taskId = (t as any).task.id;
+  assert.equal(reportTestResult(reg, session, taskId, "pased" as any).ok, false);
+  assert.equal(reportTestResult(reg, session, taskId, "passed").ok, true);
+  assert.equal(reportCIStatus(reg, session, taskId, "green" as any).ok, false);
+  assert.equal(reportCIStatus(reg, session, taskId, "passed").ok, true);
+});
+
+test("tasks with a non-string verify command are rejected at creation and edit", () => {
+  const { reg, session } = setup(1);
+  const bad = createTask(reg, session, { title: "x", files: [], verify: { command: true as any } });
+  assert.equal(bad.ok, false);
+  const blank = createTask(reg, session, { title: "x", files: [], verify: { command: "  " } });
+  assert.equal(blank.ok, false);
+  const good = createTask(reg, session, { title: "x", files: [], verify: { command: "npm test" } });
+  assert.ok(good.ok);
+});
+
+test("reopening a done task clears its stale completion timestamp", () => {
+  const { reg, session, agents } = setup(2);
+  const t = createTask(reg, session, { title: "x", files: [] });
+  assert.ok(t.ok);
+  const taskId = (t as any).task.id;
+  const r = submitReview(reg, session, { taskId, authorAgentId: agents[0].id, diff: "diff --git a b" });
+  assert.ok(r.ok);
+  decideReview(reg, session, (r as any).review.id, agents[1].id, "approved");
+  assert.ok(moveTask(reg, session, taskId, "done", agents[0].id).ok);
+  const task = session.tasks.find((x) => x.id === taskId)!;
+  assert.ok(task.doneAt);
+  moveTask(reg, session, taskId, "todo", agents[0].id);
+  assert.equal(task.doneAt, undefined);
 });
 
 // ---- HTTP-level: credentials never echo back out of /state -------------------

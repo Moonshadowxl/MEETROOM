@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -33,9 +33,15 @@ export function agentActionAllowed(session: Session, agentId: string | undefined
 
 // ---- #2 meta-agent operator -----------------------------------------------------
 
+// Attention items with an operator-model call already in flight, so a slow
+// model isn't asked about the same item again on the next sweep.
+const metaAgentInFlight = new Set<string>();
+
 /**
  * Feed open attention items to MEETROOM_OPERATOR (JSON in → JSON action out)
  * and queue the returned action behind the veto window. Only runs at L3+.
+ * The model runs in the background — like the review copilot, a slow operator
+ * model must never stall the daemon (this is called from the sweep timer).
  */
 export function sweepMetaAgent(reg: Registry, session: Session): void {
   const cmd = process.env.MEETROOM_OPERATOR;
@@ -44,20 +50,28 @@ export function sweepMetaAgent(reg: Registry, session: Session): void {
   const items = reg.listAttention().filter((i) => i.sessionId === session.id && i.status === "open");
   for (const item of items) {
     if (session.pendingActions.some((a) => a.data.attentionItemId === item.id && a.status === "pending")) continue;
-    try {
-      const input = JSON.stringify({
-        item,
-        brief: generateBrief(session),
-        instructions:
-          'Return JSON: {"kind":"resolve-proposal","proposalId":"..."} | {"kind":"reassign-task","taskId":"..."} | {"kind":"pause-room"} | {"kind":"wake-human"}, plus a "reason" string.',
-      });
-      const out = execFileSync("sh", ["-c", cmd], { input, encoding: "utf8", timeout: 120_000 });
-      const parsed = JSON.parse(out) as { kind: PendingAction["kind"]; reason?: string; proposalId?: string; taskId?: string };
-      if (!["resolve-proposal", "reassign-task", "pause-room", "wake-human"].includes(parsed.kind)) continue;
-      queueAction(reg, session, parsed.kind, { attentionItemId: item.id, proposalId: parsed.proposalId, taskId: parsed.taskId }, parsed.reason ?? "(no reason given)");
-    } catch {
-      // A broken operator model must never break the room.
-    }
+    if (metaAgentInFlight.has(item.id)) continue;
+    metaAgentInFlight.add(item.id);
+    const input = JSON.stringify({
+      item,
+      brief: generateBrief(session),
+      instructions:
+        'Return JSON: {"kind":"resolve-proposal","proposalId":"..."} | {"kind":"reassign-task","taskId":"..."} | {"kind":"pause-room"} | {"kind":"wake-human"}, plus a "reason" string.',
+    });
+    const child = execFile("sh", ["-c", cmd], { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }, (err, out) => {
+      metaAgentInFlight.delete(item.id);
+      if (err) return; // a broken operator model must never break the room
+      try {
+        const parsed = JSON.parse(out) as { kind: PendingAction["kind"]; reason?: string; proposalId?: string; taskId?: string };
+        if (!["resolve-proposal", "reassign-task", "pause-room", "wake-human"].includes(parsed.kind)) return;
+        if (session.pendingActions?.some((a) => a.data.attentionItemId === item.id && a.status === "pending")) return;
+        queueAction(reg, session, parsed.kind, { attentionItemId: item.id, proposalId: parsed.proposalId, taskId: parsed.taskId }, parsed.reason ?? "(no reason given)");
+      } catch {
+        // Malformed operator output: skip.
+      }
+    });
+    child.stdin?.on("error", () => {}); // operator may exit before reading
+    child.stdin?.end(input);
   }
 }
 

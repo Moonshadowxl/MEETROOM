@@ -157,10 +157,13 @@ function render(session) {
     const card = el("div", "card");
     const line = el("div", "", `${r.id} — task ${r.taskId} — ${r.status}`);
     if (r.authorConfidence) line.appendChild(el("span", "tag", `confidence: ${r.authorConfidence}`));
-    if (r.prUrl) {
+    // Only link http(s) URLs — prUrl is agent-supplied text, and a
+    // javascript: URL here would run in the human's browser on click.
+    if (r.prUrl && /^https?:\/\//i.test(r.prUrl)) {
       const a = el("a", "tag", "PR");
       a.href = r.prUrl;
       a.target = "_blank";
+      a.rel = "noopener noreferrer";
       line.appendChild(a);
     }
     card.appendChild(line);

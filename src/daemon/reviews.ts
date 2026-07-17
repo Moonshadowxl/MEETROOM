@@ -19,6 +19,11 @@ export function submitReview(
 ): { ok: true; review: Review } | { ok: false; error: string } {
   const task = session.tasks.find((t) => t.id === opts.taskId);
   if (!task) return { ok: false, error: "no such task" };
+  // The author must actually exist — otherwise one agent can submit under an
+  // invented authorAgentId and then "peer"-approve its own diff.
+  if (opts.authorAgentId !== "human" && !session.agents.some((a) => a.id === opts.authorAgentId)) {
+    return { ok: false, error: "unknown author: reviews must be submitted by a joined agent or the human" };
+  }
   if (!opts.diff.trim()) return { ok: false, error: "empty diff — nothing to review" };
   const review: Review = {
     id: entityId("rev"),

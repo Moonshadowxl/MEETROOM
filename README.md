@@ -152,7 +152,7 @@ Or connect the GitHub repo at [vercel.com/new](https://vercel.com/new) — the i
 
 ```sh
 npm run build   # tsc → dist/
-npm test        # builds, then node --test (91 tests: claims, resolution, tasks/gates, sessions, HTTP e2e, regressions)
+npm test        # builds, then node --test (97 tests: claims, resolution, tasks/gates, sessions, HTTP e2e, regressions)
 ```
 
 Layout follows the spec: `src/daemon/` (state + rules), `src/cli/` (command router + thin HTTP client), `src/web/` (no-build viewer), `src/shared/` (types + roles), `tests/`.
