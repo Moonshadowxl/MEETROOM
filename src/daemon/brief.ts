@@ -11,7 +11,6 @@ export function generateBrief(session: Session): string {
   lines.push(`# Meetroom brief — session ${session.id}`);
   lines.push(`Project: ${session.cwd}`);
   lines.push(`Status: ${session.status} · started ${session.createdAt}`);
-  if (session.guild) lines.push(`Guild: ${session.guild}`);
   lines.push("");
 
   lines.push("## Agents");

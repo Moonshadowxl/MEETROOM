@@ -5,9 +5,6 @@ export type AgentStatus = "waiting" | "active" | "idle" | "disconnected";
 export type Agent = {
   id: string;
   name: string;
-  age?: string;
-  personality?: string;
-  vibe?: string;
   role: string; // prebuilt or freehand
   status: AgentStatus;
   joinedAt: string;
@@ -177,8 +174,6 @@ export type SessionConfig = {
   };
   // V8 #1 — autonomy ladder (0 observe … 4 delegated)
   autonomy?: { level: 0 | 1 | 2 | 3 | 4; vetoWindowMinutes: number };
-  // V8 #5 — opt-in fleet stats collection
-  fleetLearning?: boolean;
 };
 
 // ---- V4: operations & autonomy -------------------------------------------
@@ -229,7 +224,6 @@ export type Routine = {
   cron: string; // 5-field cron expression
   cwd: string;
   template?: string;
-  guild?: string;
   lastFiredAt?: string;
   enabled: boolean;
 };
@@ -237,7 +231,6 @@ export type Routine = {
 // V4 #8 — session blueprint (stored as JSON in .meetroom/templates/ or ~/.meetroom/templates/)
 export type SessionTemplate = {
   name: string;
-  type?: SessionType;
   config?: Partial<SessionConfig>;
   roster?: { name: string; role: string; costTier?: "low" | "medium" | "high"; strengths?: string[] }[];
   budgets?: Budget[];
@@ -247,7 +240,7 @@ export type SessionTemplate = {
 };
 
 export type Session = {
-  id: string; // format: mmm-xxxx / sxx-xxxx / sxl-xxxx
+  id: string; // format: sxl-xxxx
   createdAt: string;
   cwd: string; // the project directory the session is tracking
   status: "active" | "paused" | "ended"; // V2 #7 pause/resume
@@ -271,7 +264,6 @@ export type Session = {
   // V3 #8/#9 — forking & rollback
   forkedFrom?: string;
   baseCommit?: string; // HEAD of cwd when the session started, for rollback
-  guild?: string;
   // V4 — operations & autonomy
   runners: AgentRunner[];
   budgets: Budget[];
@@ -344,13 +336,14 @@ export type Epic = {
 };
 
 // V2 #6 — persistent project memory (.meetroom/memory.json, keyed by cwd).
-// V5 #5 upgrades it to a graph: `nodes` supersedes the flat `decisions` list
-// (which is kept for backwards compatibility and auto-migrated on load).
+// The graph `nodes` are the canonical store; the legacy flat `decisions` /
+// `conventions` fields are read once at load and migrated into nodes.
 export type ProjectMemory = {
   projectPath: string;
-  decisions: { summary: string; date: string; sourceSessionId: string }[];
-  conventions: string[];
-  nodes?: MemoryNode[];
+  nodes: MemoryNode[];
+  /** @deprecated legacy flat lists — migrated into `nodes` on load, no longer written */
+  decisions?: { summary: string; date: string; sourceSessionId: string }[];
+  conventions?: string[];
 };
 
 // V3 #5 — agent reputation (persisted across sessions, keyed by identity)
@@ -362,11 +355,3 @@ export type AgentReputation = {
   avgTurnaroundMinutes: number;
 };
 
-// V3 #10 — guilds / persistent teams
-export type Guild = {
-  id: string;
-  name: string;
-  members: { agentIdentity: string; defaultRole: string; costTier?: "low" | "medium" | "high"; strengths?: string[] }[];
-};
-
-export type SessionType = "mmm" | "sxx" | "sxl";

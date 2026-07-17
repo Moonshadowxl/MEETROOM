@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AttentionItem, ChatMessage, Session, SessionConfig, SessionType } from "../shared/types.js";
+import type { AttentionItem, ChatMessage, Session, SessionConfig } from "../shared/types.js";
 import { entityId, now, sessionId, sessionToken } from "../shared/ids.js";
 import { redactSecrets } from "./trust.js";
 
@@ -98,16 +98,14 @@ export class Registry extends EventEmitter {
   }
 
   createSession(opts: {
-    type: SessionType;
     cwd: string;
     remote?: boolean;
     config?: Partial<SessionConfig>;
     baseCommit?: string;
-    guild?: string;
     forkedFrom?: string;
   }): Session {
-    let id = sessionId(opts.type);
-    while (this.sessions.has(id)) id = sessionId(opts.type);
+    let id = sessionId();
+    while (this.sessions.has(id)) id = sessionId();
     const session: Session = {
       id,
       createdAt: now(),
@@ -135,12 +133,11 @@ export class Registry extends EventEmitter {
       remote: opts.remote ?? false,
       token: opts.remote ? sessionToken() : undefined,
       baseCommit: opts.baseCommit,
-      guild: opts.guild,
       forkedFrom: opts.forkedFrom,
     };
     this.sessions.set(session.id, session);
     this.save(session);
-    this.event(session, "session-created", undefined, { type: opts.type });
+    this.event(session, "session-created");
     return session;
   }
 

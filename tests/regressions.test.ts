@@ -18,7 +18,7 @@ import type { Agent, Session } from "../src/shared/types.js";
 
 function setup(agentCount = 3): { reg: Registry; session: Session; agents: Agent[] } {
   const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
-  const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
+  const session = reg.createSession({ cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const agents: Agent[] = [];
   for (let i = 0; i < agentCount; i++) {
     const a: Agent = {
@@ -246,7 +246,7 @@ async function call(method: string, path: string, body?: unknown) {
 
 test("session state redacts the session token and integration secrets", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const created = await call("POST", "/api/sessions", { type: "sxl", cwd: proj, remote: true });
+  const created = await call("POST", "/api/sessions", { cwd: proj, remote: true });
   const id = created.data.session.id;
   assert.ok(created.data.session.token); // creation response still returns it once
   await call("POST", `/api/sessions/${id}/integrations`, { source: "ci", secret: "hush" });

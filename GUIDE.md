@@ -120,7 +120,7 @@ The routine creates the session, spawns runners from the template, and the retro
 
 - **Files on tasks are load-bearing.** `task claim` auto-claims them, conflict prediction uses them, policy matches on them, memory links to them. A task with no `--files` opts out of all four.
 - **Write the `--verify` command at creation time**, before implementation bias sets in. It's the cheapest "did we actually build the thing" insurance available.
-- `--depends-on` at creation beats discovering the dependency as a mid-session block. `simulate "<feature>"` prices a plan *and* leaves it as an approvable draft.
+- `--depends-on` at creation beats discovering the dependency as a mid-session block. `plan "<feature>"` drafts a board that only goes live once approved.
 - Trust the routing suggestion as a default, not a rule — it learns from reputation and stall history, but you know things it doesn't.
 
 ### Reviews
@@ -224,6 +224,6 @@ Three files tell you everything about a room after the fact:
 
 **Why did my proposal auto-resolve?** Nobody objected within the objection window (default 5m). That's by design — silence is consent, so rooms don't stall on ceremony.
 
-**Where's the line between `plan`, `simulate`, and `epic`?** `plan` drafts a board from a description. `simulate` does the same *plus* time/cost estimates. `epic` groups tasks across many sessions toward one outcome. Simulate before approving; attach to an epic if the work outlives the session.
+**Where's the line between `plan` and `epic`?** `plan` drafts a board from a description (approval-gated). `epic` groups tasks across many sessions toward one outcome. Attach to an epic if the work outlives the session.
 
 **What wasn't built from the specs?** The hosted relay (V6 #6), tree-sitter symbol claims (V5 #1 shipped the `lines:A-B` half), and the VS Code extension (V7 #8). Each is spec'd with rationale for why it's last.

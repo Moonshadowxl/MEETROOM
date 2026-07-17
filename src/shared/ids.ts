@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import type { SessionType } from "./types.js";
 
 const ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"; // no lookalikes
 
@@ -10,8 +9,10 @@ export function randomId(len = 4): string {
   return out;
 }
 
-export function sessionId(type: SessionType): string {
-  return `${type}-${randomId(4)}`;
+// The "sxl" prefix is kept for compatibility with existing locks and the
+// `meetroom join --sxl <id>` spec form; it is no longer a choice.
+export function sessionId(): string {
+  return `sxl-${randomId(4)}`;
 }
 
 export function entityId(prefix: string): string {

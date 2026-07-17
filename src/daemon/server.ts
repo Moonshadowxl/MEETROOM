@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Plugin, Session, SessionType } from "../shared/types.js";
+import type { Plugin, Session } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import { Registry } from "./registry.js";
 import { claimFile, claimLines, releaseAgentPresence, releaseFile, releaseLines, sweepClaimTimeouts, touchClaim } from "./fileClaims.js";
@@ -35,7 +35,6 @@ import {
   loadEpics,
   queueAction,
   saveRetro,
-  simulatePlan,
   sweepMetaAgent,
   sweepPendingActions,
   sweepSelfHealing,
@@ -256,9 +255,8 @@ export function buildServer(reg: Registry) {
     }),
 
     route("POST", "/api/sessions", (c) => {
-      const { type, cwd, remote, config, guild, baseCommit, template } = c.body;
+      const { cwd, remote, config, baseCommit, template } = c.body;
       let { roster } = c.body;
-      if (!["mmm", "sxx", "sxl"].includes(type)) return bad(c.res, "type must be one of mmm|sxx|sxl");
       if (!cwd) return bad(c.res, "cwd required");
       // V4 #8 — templates bundle config + roster + budgets + notify + a draft plan.
       let tpl;
@@ -267,11 +265,9 @@ export function buildServer(reg: Registry) {
         if (!tpl) return bad(c.res, `no template "${template}" in .meetroom/templates/ or ~/.meetroom/templates/`, 404);
       }
       const session = reg.createSession({
-        type: type as SessionType,
         cwd,
         remote,
         config: { ...tpl?.config, ...config },
-        guild: guild ?? tpl?.name,
         baseCommit,
       });
       roster = roster ?? tpl?.roster;
@@ -284,8 +280,7 @@ export function buildServer(reg: Registry) {
         }
       }
       session.plugins.push(...loadProjectPlugins(cwd)); // project-scope plugins persist across sessions (V3 #1)
-      // V3 #10 — guild roster pre-populates profiles; members flip to active
-      // when they actually join.
+      // Roster pre-populates profiles; members flip to active when they join.
       if (Array.isArray(roster)) {
         for (const m of roster) {
           if (!m?.name || !m?.role) continue;
@@ -319,7 +314,7 @@ export function buildServer(reg: Registry) {
       const s = withSession(c);
       if (!s) return;
       if (s.status === "ended") return bad(c.res, "session has ended", 410);
-      const { name, role, age, personality, vibe, costTier, strengths, identity } = c.body;
+      const { name, role, costTier, strengths, identity } = c.body;
       if (!name || !role) return bad(c.res, "name and role required");
       let agent = s.agents.find((a) => a.name === name);
       if (agent) {
@@ -331,9 +326,6 @@ export function buildServer(reg: Registry) {
           id: entityId("agent"),
           name,
           role,
-          age,
-          personality,
-          vibe,
           costTier,
           strengths,
           identity: identity ?? name,
@@ -721,7 +713,7 @@ export function buildServer(reg: Registry) {
       const memory = distillSessionIntoMemory(s); // V2 #6
       const retro = generateRetro(s); // V8 #3 — lessons don't evaporate
       const retroPath = saveRetro(s, retro);
-      reg.event(s, "session-ended", undefined, { decisions: memory.decisions.length, retroPath });
+      reg.event(s, "session-ended", undefined, { memoryNodes: memory.nodes.length, retroPath });
       json(c.res, 200, { ok: true, memory, retro, retroPath });
     }),
 
@@ -729,8 +721,7 @@ export function buildServer(reg: Registry) {
     route("POST", "/api/sessions/:id/fork", (c) => {
       const s = withSession(c);
       if (!s) return;
-      const type = (s.id.split("-")[0] as SessionType) ?? "sxl";
-      const fork = reg.createSession({ type, cwd: s.cwd, remote: s.remote, config: { ...s.config }, guild: s.guild, baseCommit: s.baseCommit, forkedFrom: s.id });
+      const fork = reg.createSession({ cwd: s.cwd, remote: s.remote, config: { ...s.config }, baseCommit: s.baseCommit, forkedFrom: s.id });
       fork.agents = structuredClone(s.agents);
       fork.tasks = structuredClone(s.tasks);
       fork.plugins = structuredClone(s.plugins);
@@ -863,11 +854,11 @@ export function buildServer(reg: Registry) {
 
     route("POST", "/api/routines", (c) => {
       if (!requireOperator(c, "maintainer")) return;
-      const { name, cron, cwd, template, guild } = c.body;
+      const { name, cron, cwd, template } = c.body;
       if (!name || !cron || !cwd) return bad(c.res, "name, cron, and cwd required");
       if (cron.trim().split(/\s+/).length !== 5) return bad(c.res, "cron must have 5 fields (min hour dom mon dow)");
       const routines = loadRoutines(reg.dataDir);
-      const routine = { id: entityId("rout"), name, cron, cwd, template, guild, enabled: true };
+      const routine = { id: entityId("rout"), name, cron, cwd, template, enabled: true };
       routines.push(routine);
       saveRoutines(reg.dataDir, routines);
       json(c.res, 201, { ok: true, routine });
@@ -1083,17 +1074,6 @@ export function buildServer(reg: Registry) {
       if (s) json(c.res, 200, { ok: true, retro: generateRetro(s) });
     }),
 
-    // V8 #4 — price the plan before running it. Also stores the draft so a
-    // good simulation can be approved directly (still approval-gated).
-    route("POST", "/api/sessions/:id/simulate", (c) => {
-      const s = withSession(c);
-      if (!s || !ensureWritable(s, c.res, c.body.agentId)) return;
-      if (!c.body.description) return bad(c.res, "description required");
-      const plan = createDraftPlan(reg, s, c.body.description);
-      const sim = simulatePlan(s, plan.tasks);
-      json(c.res, 200, { ok: true, plan, simulation: sim });
-    }),
-
     route("POST", "/api/sessions/:id/epics", (c) => {
       const s = withSession(c);
       if (!s) return;
@@ -1210,7 +1190,7 @@ export function buildServer(reg: Registry) {
       try {
         const tpl = routine.template ? loadTemplate(routine.cwd, routine.template) : undefined;
         if (routine.template && !tpl) throw new Error(`template "${routine.template}" not found`);
-        const session = reg.createSession({ type: "sxl", cwd: routine.cwd, config: tpl?.config, guild: routine.guild ?? tpl?.name });
+        const session = reg.createSession({ cwd: routine.cwd, config: tpl?.config });
         if (tpl?.budgets) for (const b of tpl.budgets) setBudget(reg, session, b);
         if (tpl?.notify) session.notify = structuredClone(tpl.notify);
         if (tpl?.planDescription) createDraftPlan(reg, session, tpl.planDescription);

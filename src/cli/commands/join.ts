@@ -4,7 +4,7 @@ export async function cmdJoin(parsed: Parsed): Promise<void> {
   const { flags, positional } = parsed;
   // `meetroom join --sxl <id>` (spec form) or `--session <id>`; falls back to
   // the .meetroom/lock in cwd so a bare `meetroom join --name X --role Y` works.
-  const typeFlagId = (["sxl", "sxx", "mmm"] as const).map((t) => flags[t]).find((v) => typeof v === "string") as string | undefined;
+  const typeFlagId = typeof flags.sxl === "string" ? flags.sxl : undefined;
   const sessionId = typeFlagId ?? (flags.session as string) ?? positional[0] ?? readLock()?.sessionId;
   if (!sessionId) fail("session id required: meetroom join --sxl <id> --name \"...\" --role \"...\"");
 
@@ -20,9 +20,6 @@ export async function cmdJoin(parsed: Parsed): Promise<void> {
   const data = await api({ host, port, token, scheme }, "POST", `/api/sessions/${sessionId}/join`, {
     name,
     role,
-    age: flags.age,
-    personality: flags.personality,
-    vibe: flags.vibe,
     identity: flags.identity,
     costTier: flags["cost-tier"],
     strengths: csv(flags.strengths),

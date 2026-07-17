@@ -85,15 +85,15 @@ Run `meetroom help` for the full list. Highlights by area:
 | Decisions | `propose` `object` `resolve` `reject` `vote` |
 | Review | `review submit/approve/request-changes/comment/show/pr-sync` `test report` `ci report` |
 | Ops | `export` `fork` `compare` `rollback` `sandbox` `usage` `memory` `reputation` |
-| Extend | `plugin install/list/run` `notify configure` `guild create/list` `roles` |
+| Extend | `plugin install/list/run` `notify configure` `roles` |
 
 ## Feature map (V1 → V3)
 
-**V1 — core:** daemon + JSON persistence (`data/sessions/<id>.json`), join with profiles (prebuilt roles: Reviewer, Implementer, Tester, Architect — or freehand name/age/personality/vibe), chat, file claims with timeout auto-release, propose/object/resolve/escalate, read-only web viewer, `prompt-all`.
+**V1 — core:** daemon + JSON persistence (`data/sessions/<id>.json`), join with profiles (prebuilt roles: Reviewer, Implementer, Tester, Architect — or a freehand role), chat, file claims with timeout auto-release, propose/object/resolve/escalate, read-only web viewer, `prompt-all`.
 
 **V2:** task board over file claims · claim waitlists (`--wait`) · diff-based review gate · remote sessions (`start --remote` binds all interfaces + per-session token for non-localhost joins) · auto-brief on join + `meetroom brief` · persistent project memory (`.meetroom/memory.json`, distilled at `meetroom end`, hand-editable) · pause/resume · private `prompt @agent` · proposal voting with lead tie-break · timeline events, `export --format md|json`, per-agent token/cost tracking (`usage report/show`).
 
-**V3:** plugins (shell command templates; `--project` scope persists in `.meetroom/plugins.json`) · PR integration (`review submit --pr` pushes `meetroom/<session>/<task>` and opens a PR via `gh`/`glab` or `MEETROOM_PR_CMD`; sync back with `review pr-sync` or the webhook endpoint) · CI gate (`--requires-ci`; generic webhook — see `meetroom ci webhook-url`) · cost/capability-aware routing (complexity estimate + suggested agent on every task) · agent reputation (`.meetroom/reputation.json`, informational) · confidence scoring · QA test gate (`--requires-tests` + `test report`) · session fork/compare · rollback to the session's base commit · guilds (`~/.meetroom/guilds.json`) · Slack/Discord/webhook notification bridge · pair mode · natural-language task decomposition (`plan`, approval-gated) · sandboxed execution via git worktrees (`sandbox <task-id>`).
+**V3:** plugins (shell command templates; `--project` scope persists in `.meetroom/plugins.json`) · PR integration (`review submit --pr` pushes `meetroom/<session>/<task>` and opens a PR via `gh`/`glab` or `MEETROOM_PR_CMD`; sync back with `review pr-sync` or the webhook endpoint) · CI gate (`--requires-ci`; generic webhook — see `meetroom ci webhook-url`) · cost/capability-aware routing (complexity estimate + suggested agent on every task) · agent reputation (`.meetroom/reputation.json`, informational) · confidence scoring · QA test gate (`--requires-tests` + `test report`) · session fork/compare · rollback to the session's base commit · Slack/Discord/webhook notification bridge · pair mode · natural-language task decomposition (`plan`, approval-gated) · sandboxed execution via git worktrees (`sandbox <task-id>`).
 
 **V4 — operations & autonomy:** agent runner/supervisor (`agent spawn` with restart policies + logs) · budget guardrails (`budget set`, auto-pause on breach) · cron routines that create sessions from templates · liveness heartbeats with idle/disconnected detection and automatic task reassignment · cross-session attention queue (`attention` + ack/done/snooze) · versioned shared artifacts · escalation-timeout policies · session templates (`template save`, `start --template`).
 
@@ -103,7 +103,7 @@ Run `meetroom help` for the full list. Highlights by area:
 
 **V7 — ecosystem:** agent adapter kit (`adapter generate claude|codex|generic`) · plugin permission manifests (dangerous permissions need `--confirm`) · HMAC-signed inbound webhooks (`integration add` → external systems post into room chat) · GitHub issue sync (`sync github --repo o/n --label meetroom`) · interactive web viewer (approve/resolve/pause/prompt from the browser with an operator key) · OpenAPI contract generated from the live route table (`/api/openapi.json`) · blueprint bundles (`bundle export/import`).
 
-**V8 — self-improving org:** autonomy levels L0–L4 (`autonomy set`; L0 = agents discuss but don't act) · meta-agent operator (`MEETROOM_OPERATOR` handles attention items at L3+ behind a veto window; `veto <action-id>`) · retrospective engine (auto-generated at session end with config suggestions; `retro`) · plan simulation with cost/time estimates from history (`simulate`) · opt-in fleet learning · self-healing detectors (blocked-board deadlocks, claim cycles, post-done CI regressions) · outcome verification (`task create --verify "<cmd>"` + `verify run` gates done) · epics spanning sessions (`epic create/status`, `task create --epic`).
+**V8 — self-improving org:** autonomy levels L0–L4 (`autonomy set`; L0 = agents discuss but don't act) · meta-agent operator (`MEETROOM_OPERATOR` handles attention items at L3+ behind a veto window; `veto <action-id>`) · retrospective engine (auto-generated at session end with config suggestions; `retro`) · self-healing detectors (blocked-board deadlocks, claim cycles, post-done CI regressions) · outcome verification (`task create --verify "<cmd>"` + `verify run` gates done) · epics spanning sessions (`epic create/status`, `task create --epic`).
 
 **Lifecycle & operations (post-V8):** full task lifecycle (`task show/assign/drop/edit/cancel`, cancelling voids dependencies and unblocks dependents; reopen with `task move <id> todo`) · proposal veto/withdraw (`reject`, also a button in the web viewer) · graceful daemon shutdown (`meetroom stop`) · environment diagnostics (`meetroom doctor`: daemon, lock, agent contexts, orphaned worktrees, `.meetroom` JSON health) · live SSE web viewer (updates push instantly; polling is only a fallback) · append-only event log (`<id>.events.ndjson` beside each session snapshot — O(1) event writes, snapshots stay lean) · replay-protected inbound webhooks (signature covers `ts.text`, 5-minute freshness window, each signature accepted once) · once operators are configured, speaking as the human requires an operator key · votes and objections must come from joined agents (no ballot stuffing) · SSE streams for remote sessions authenticate via `?token=` (EventSource can't set headers).
 
@@ -124,7 +124,7 @@ The V4–V8 specs live in [`specs/`](specs/); the deep-dive usage manual is [`GU
 | `MEETROOM_OPERATOR_KEY` | operator key for privileged commands (or `meetroom login --key`) |
 | `MEETROOM_TLS_CERT` / `MEETROOM_TLS_KEY` | serve the daemon over HTTPS |
 | `MEETROOM_SCHEME` | set to `https` so the CLI talks to a TLS daemon (or pass `--https` on `join`/any command) |
-| `MEETROOM_HOME` | where guilds/templates/secrets/global memory live (default `~/.meetroom`) |
+| `MEETROOM_HOME` | where templates/secrets/global memory live (default `~/.meetroom`) |
 
 ## Remote sessions
 

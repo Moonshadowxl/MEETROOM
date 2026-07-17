@@ -155,13 +155,12 @@ export async function cmdRoutine(parsed: Parsed): Promise<void> {
   const ctx = { host: (parsed.flags.host as string) ?? "127.0.0.1", port };
 
   if (sub === "create") {
-    if (!arg || !parsed.flags.cron) fail('usage: meetroom routine create "<name>" --cron "0 2 * * *" [--template <name>] [--guild <name>]');
+    if (!arg || !parsed.flags.cron) fail('usage: meetroom routine create "<name>" --cron "0 2 * * *" [--template <name>]');
     const data = await api(ctx, "POST", "/api/routines", {
       name: arg,
       cron: parsed.flags.cron,
       cwd: process.cwd(),
       template: parsed.flags.template,
-      guild: parsed.flags.guild,
     });
     console.log(`routine ${data.routine.id} created — fires on "${parsed.flags.cron}" in ${process.cwd()}`);
     return;

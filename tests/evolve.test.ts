@@ -10,7 +10,6 @@ import {
   epicStatus,
   generateRetro,
   queueAction,
-  simulatePlan,
   sweepPendingActions,
   sweepSelfHealing,
   vetoAction,
@@ -23,7 +22,7 @@ process.env.MEETROOM_HOME = mkdtempSync(join(tmpdir(), "meetroom-home-"));
 
 function setup(): { reg: Registry; session: Session; a: Agent; b: Agent } {
   const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
-  const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
+  const session = reg.createSession({ cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const mk = (name: string): Agent => ({
     id: `agent-${name}`,
     name,
@@ -81,19 +80,6 @@ test("retro computes stats and suggests fixes for pathologies", () => {
   assert.equal(retro.stats.reviewBounceRate, 50);
   assert.ok(retro.suggestions.some((s) => s.includes("claim timeout")));
   assert.ok(retro.suggestions.some((s) => s.includes("bounce")));
-});
-
-test("simulation estimates from history, with honest defaults when there is none", () => {
-  const { session } = setup();
-  const sim = simulatePlan(session, [
-    { title: "fix typo in readme", description: "" },
-    { title: "redesign auth architecture", description: "" },
-  ]);
-  assert.equal(sim.taskCount, 2);
-  assert.equal(sim.perTask[0].complexity, "trivial");
-  assert.equal(sim.perTask[1].complexity, "complex");
-  assert.ok(sim.estTotalMinutes > 0);
-  assert.match(sim.basis, /defaults/);
 });
 
 test("epics link tasks across sessions and report progress", () => {

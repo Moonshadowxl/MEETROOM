@@ -24,22 +24,25 @@ export function loadMemory(cwd: string): ProjectMemory {
       // fall through to fresh memory
     }
   }
-  return { projectPath: cwd, decisions: [], conventions: [], nodes: [] };
+  return { projectPath: cwd, nodes: [] };
 }
 
-/** V5 #5 — flat decisions auto-migrate to graph nodes (kept in both shapes). */
+/** Legacy flat decisions/conventions migrate into graph nodes once on load;
+ *  nodes are the only shape written back. */
 function migrateToGraph(memory: ProjectMemory): void {
   memory.nodes ??= [];
-  for (const d of memory.decisions) {
+  for (const d of memory.decisions ?? []) {
     if (!memory.nodes.some((n) => n.summary === d.summary)) {
       memory.nodes.push({ id: entityId("mem"), kind: "decision", summary: d.summary, links: {}, sourceSessionId: d.sourceSessionId, date: d.date });
     }
   }
-  for (const c of memory.conventions) {
+  for (const c of memory.conventions ?? []) {
     if (!memory.nodes.some((n) => n.summary === c)) {
       memory.nodes.push({ id: entityId("mem"), kind: "convention", summary: c, links: {}, sourceSessionId: "manual", date: now() });
     }
   }
+  delete memory.decisions;
+  delete memory.conventions;
 }
 
 export function saveMemory(cwd: string, memory: ProjectMemory): void {
@@ -65,9 +68,8 @@ export function distillSessionIntoMemory(session: Session): ProjectMemory {
   }
   for (const item of items) {
     const summary = summarize(item.text);
-    if (!memory.decisions.some((d) => d.summary === summary)) {
-      memory.decisions.push({ summary, date, sourceSessionId: session.id });
-      memory.nodes!.push({
+    if (!memory.nodes.some((n) => n.summary === summary)) {
+      memory.nodes.push({
         id: entityId("mem"),
         kind: "decision",
         summary,
@@ -112,7 +114,7 @@ export function promoteMemoryNode(cwd: string, nodeId: string): { ok: boolean; e
 
 /** Active memory (superseded nodes filtered out), project + global merged. */
 export function activeMemoryNodes(cwd: string): MemoryNode[] {
-  const project = loadMemory(cwd).nodes ?? [];
+  const project = loadMemory(cwd).nodes;
   const global = loadGlobalMemory();
   const all = [...project, ...global.filter((g) => !project.some((p) => p.summary === g.summary))];
   const superseded = new Set(all.map((n) => n.links.supersedes).filter(Boolean));

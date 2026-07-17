@@ -87,7 +87,6 @@ function render(session) {
     card.appendChild(el("div", "", `${a.name} — ${a.role}`));
     const bits = [a.status];
     if (a.costTier) bits.push(`tier: ${a.costTier}`);
-    if (a.vibe) bits.push(a.vibe);
     card.appendChild(el("div", "meta", bits.join(" · ")));
     agents.appendChild(card);
   }

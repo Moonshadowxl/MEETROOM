@@ -6,7 +6,7 @@ import { estimateComplexity, suggestAgent } from "./routing.js";
 import { updateReputationOnTaskDone } from "./reputation.js";
 import { predictConflicts } from "./intelligence.js";
 import { policyViolations } from "./trust.js";
-import { linkTaskToEpic, recordFleetStat } from "./evolve.js";
+import { linkTaskToEpic } from "./evolve.js";
 
 // V2 #1 — task board: agents claim *work*, not just paths. File claims stay
 // the low-level primitive underneath.
@@ -269,8 +269,6 @@ export function moveTask(
   reg.event(session, "task-move", agentId, { taskId, status });
   if (status === "done") {
     updateReputationOnTaskDone(reg, session, task);
-    // V8 #5 — opt-in fleet stats (identity/complexity/turnaround/rework only).
-    recordFleetStat(session, task, session.reviews.filter((r) => r.taskId === task.id && r.status === "changes-requested").length);
     unblockDependents(reg, session, task.id);
   }
   return { ok: true, status };

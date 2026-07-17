@@ -273,18 +273,6 @@ export async function cmdRetro(parsed: Parsed): Promise<void> {
   for (const s of r.suggestions) console.log(`  - ${s}`);
 }
 
-export async function cmdSimulate(parsed: Parsed): Promise<void> {
-  const description = parsed.positional.join(" ");
-  if (!description) fail('usage: meetroom simulate "<feature description>"');
-  const ctx = requireContext(parsed.flags);
-  const data = await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/simulate`, { description });
-  const sim = data.simulation;
-  console.log(`simulation (basis: ${sim.basis}):`);
-  for (const t of sim.perTask) console.log(`  [${t.complexity}] ~${t.estMinutes}m — ${t.title}`);
-  console.log(`\ntotal: ${sim.taskCount} tasks, ~${Math.round(sim.estTotalMinutes / 60 * 10) / 10} agent-hours${sim.estCostUsd ? `, ~$${sim.estCostUsd}` : ""}`);
-  console.log(`plan drafted as ${data.plan.id} — approve with \`meetroom plan approve ${data.plan.id}\` or discard it`);
-}
-
 export async function cmdEpic(parsed: Parsed): Promise<void> {
   const [sub, ...rest] = parsed.positional;
   const ctx = requireContext(parsed.flags);

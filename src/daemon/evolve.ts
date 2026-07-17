@@ -1,17 +1,15 @@
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import type { Epic, PendingAction, Session, Task } from "../shared/types.js";
+import type { Epic, PendingAction, Session } from "../shared/types.js";
 import { entityId, now } from "../shared/ids.js";
 import type { Registry } from "./registry.js";
 import { resolveProposal } from "./resolution.js";
 import { generateBrief } from "./brief.js";
-import { estimateComplexity } from "./routing.js";
 
 // V8 — the self-improving org: autonomy levels (#1), meta-agent (#2),
-// retrospectives (#3), simulation (#4), fleet learning (#5), self-healing
-// detectors (#6), outcome verification (#7), epics (#8).
+// retrospectives (#3), self-healing detectors (#6), outcome
+// verification (#7), epics (#8).
 //
 // Governing rule: autonomy is granted per capability, per track record —
 // never globally, never by default.
@@ -203,79 +201,6 @@ export function saveRetro(session: Session, retro: Retro): string {
   const p = join(dir, `${session.id}.json`);
   writeFileSync(p, JSON.stringify(retro, null, 2));
   return p;
-}
-
-// ---- #5 fleet learning ---------------------------------------------------------------
-
-type FleetRecord = { identity: string; complexity: string; turnaroundMinutes?: number; rework: number; at: string };
-
-function fleetPath(): string {
-  return join(process.env.MEETROOM_HOME ?? join(homedir(), ".meetroom"), "fleet-stats.json");
-}
-
-export function loadFleetStats(): FleetRecord[] {
-  if (!existsSync(fleetPath())) return [];
-  try {
-    return JSON.parse(readFileSync(fleetPath(), "utf8")) as FleetRecord[];
-  } catch {
-    return [];
-  }
-}
-
-/** Opt-in per session; strictly stats, strictly local disk — never code or filenames. */
-export function recordFleetStat(session: Session, task: Task, rework: number): void {
-  if (!session.config.fleetLearning) return;
-  const agent = session.agents.find((a) => a.id === task.assignedAgentId);
-  if (!agent) return;
-  const records = loadFleetStats();
-  records.push({
-    identity: agent.identity,
-    complexity: task.estimatedComplexity ?? "moderate",
-    turnaroundMinutes:
-      task.claimedAt && task.doneAt ? Math.round((new Date(task.doneAt).getTime() - new Date(task.claimedAt).getTime()) / 60_000) : undefined,
-    rework,
-    at: now(),
-  });
-  mkdirSync(join(fleetPath(), ".."), { recursive: true });
-  writeFileSync(fleetPath(), JSON.stringify(records.slice(-500), null, 2));
-}
-
-// ---- #4 simulation / dry-run ------------------------------------------------------------
-
-export function simulatePlan(session: Session, tasks: { title: string; description: string }[]): {
-  taskCount: number;
-  estTotalMinutes: number;
-  estCostUsd: number;
-  perTask: { title: string; complexity: string; estMinutes: number }[];
-  basis: string;
-} {
-  // Historical turnaround by complexity: this session's done tasks first, fleet stats as fallback.
-  const local = session.tasks.filter((t) => t.status === "done" && t.claimedAt && t.doneAt);
-  const fleet = loadFleetStats();
-  const byComplexity = (c: string): number => {
-    const localSamples = local
-      .filter((t) => (t.estimatedComplexity ?? "moderate") === c)
-      .map((t) => (new Date(t.doneAt!).getTime() - new Date(t.claimedAt!).getTime()) / 60_000);
-    const fleetSamples = fleet.filter((r) => r.complexity === c && r.turnaroundMinutes !== undefined).map((r) => r.turnaroundMinutes!);
-    const samples = localSamples.length >= 2 ? localSamples : [...localSamples, ...fleetSamples];
-    if (!samples.length) return c === "trivial" ? 15 : c === "complex" ? 120 : 45; // honest defaults
-    return Math.round(samples.reduce((a, b) => a + b, 0) / samples.length);
-  };
-  const doneCount = local.length;
-  const totalCost = session.usage.reduce((s, u) => s + u.costUsd, 0);
-  const costPerTask = doneCount > 0 ? totalCost / doneCount : 0;
-
-  const perTask = tasks.map((t) => {
-    const complexity = estimateComplexity({ title: t.title, description: t.description, files: [] }) ?? "moderate";
-    return { title: t.title, complexity, estMinutes: byComplexity(complexity) };
-  });
-  return {
-    taskCount: perTask.length,
-    estTotalMinutes: perTask.reduce((s, t) => s + t.estMinutes, 0),
-    estCostUsd: Math.round(costPerTask * perTask.length * 100) / 100,
-    perTask,
-    basis: doneCount > 0 ? `${doneCount} completed local tasks${fleet.length ? ` + ${fleet.length} fleet records` : ""}` : fleet.length ? `${fleet.length} fleet records` : "defaults (no history yet)",
-  };
 }
 
 // ---- #6 self-healing detectors -------------------------------------------------------------

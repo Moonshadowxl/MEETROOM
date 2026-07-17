@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import type { Parsed } from "../client.js";
 import { api, DEFAULT_PORT, writeLock } from "../client.js";
-import { loadGuilds } from "./guild.js";
 
 const DAEMON_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "daemon", "server.js");
 
@@ -39,7 +38,6 @@ function gitHead(cwd: string): string | undefined {
 
 export async function cmdStart(parsed: Parsed): Promise<void> {
   const { flags } = parsed;
-  const type = flags.mmm ? "mmm" : flags.sxx ? "sxx" : "sxl"; // default sxl
   const remote = !!flags.remote;
   const port = flags.port ? Number(flags.port) : Number(process.env.MEETROOM_PORT ?? DEFAULT_PORT);
   const cwd = process.cwd();
@@ -51,29 +49,12 @@ export async function cmdStart(parsed: Parsed): Promise<void> {
   if (flags["objection-timeout"]) config.objectionTimeoutMinutes = Number(flags["objection-timeout"]);
   if (flags["require-pr-merge"]) config.requirePrMergeForDone = true;
 
-  let roster: unknown;
-  const guildName = flags.guild as string | undefined;
-  if (guildName) {
-    const guild = loadGuilds().find((g) => g.name === guildName);
-    if (!guild) throw new Error(`no guild named "${guildName}" — create one with \`meetroom guild create\``);
-    roster = guild.members.map((m) => ({
-      name: m.agentIdentity,
-      role: m.defaultRole,
-      identity: m.agentIdentity,
-      costTier: m.costTier,
-      strengths: m.strengths,
-    }));
-  }
-
   const ctx = { host: "127.0.0.1", port, token: undefined as string | undefined };
   const data = await api(ctx, "POST", "/api/sessions", {
-    type,
     cwd,
     remote,
     config,
-    guild: guildName,
     baseCommit: gitHead(cwd),
-    roster,
     template: flags.template, // V4 #8 — session blueprint
   });
 
@@ -100,6 +81,6 @@ export async function cmdStart(parsed: Parsed): Promise<void> {
   console.log("agents join with:");
   const tokenFlag = remote ? ` --token ${token}` : "";
   for (let i = 1; i <= (agentCount ?? 2); i++) {
-    console.log(`  meetroom join --${type} ${sessionId} --name "Agent-${i}" --role Implementer${tokenFlag}`);
+    console.log(`  meetroom join --sxl ${sessionId} --name "Agent-${i}" --role Implementer${tokenFlag}`);
   }
 }

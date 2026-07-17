@@ -33,7 +33,6 @@ import {
   cmdReputation,
   cmdLeave,
 } from "./commands/misc.js";
-import { cmdGuild } from "./commands/guild.js";
 import { cmdAgent, cmdArtifact, cmdAttention, cmdBudget, cmdRoutine, cmdTemplate } from "./commands/ops.js";
 import { cmdAudit, cmdLogin, cmdOperator, cmdOrg, cmdPurge, cmdSecret } from "./commands/trust.js";
 import {
@@ -43,7 +42,6 @@ import {
   cmdEpic,
   cmdIntegration,
   cmdRetro,
-  cmdSimulate,
   cmdSync,
   cmdVerify,
   cmdVeto,
@@ -62,10 +60,10 @@ const HELP = `
 usage: meetroom <command> [args] [--flags]
 
 room
-  start [--sxl|--sxx|--mmm] [--remote] [--guild <name>] [--agents N]
+  start [--remote] [--agents N] [--template <name>]
         [--claim-timeout M] [--objection-timeout M] [--port P]
-  join --<type> <id> --name "..." --role "..." [--token T] [--host H] [--port P]
-       [--age --personality --vibe --cost-tier low|medium|high --strengths a,b]
+  join --sxl <id> --name "..." --role "..." [--token T] [--host H] [--port P]
+       [--cost-tier low|medium|high --strengths a,b]
   leave · sessions · status · brief · listen · inbox [--since <ts>]
   pause · resume · end · fork · compare <a> <b> · rollback [--yes]
   export [session-id] --format md|json
@@ -99,8 +97,7 @@ review gate
 extend & observe
   plugin install <name> --command "<cmd>" [--project] [--permissions a,b] · plugin list/run
   notify configure --webhook|--slack-webhook|--discord-webhook <url> [--events a,b]
-  plan "<feature>" · plan approve|discard <id> · simulate "<feature>"
-  guild create "<name>" --members "ident:role[:tier],..." · guild list
+  plan "<feature>" · plan approve|discard <id>
   usage report --in N --out N --cost X · usage show
   sandbox <task-id> · memory [promote <node-id>] · recall "<query>" · reputation · roles
 
@@ -238,8 +235,6 @@ async function main(): Promise<void> {
       return cmdNotify(parsed);
     case "plan":
       return cmdPlan(parsed);
-    case "guild":
-      return cmdGuild(parsed);
     case "memory":
       return cmdMemory(parsed);
     case "recall":
@@ -288,8 +283,6 @@ async function main(): Promise<void> {
       return cmdVerify(parsed);
     case "retro":
       return cmdRetro(parsed);
-    case "simulate":
-      return cmdSimulate(parsed);
     case "epic":
       return cmdEpic(parsed);
     default:

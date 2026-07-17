@@ -19,7 +19,7 @@ import type { Agent, Session } from "../src/shared/types.js";
 
 function setup(agentCount = 3): { reg: Registry; session: Session; agents: Agent[] } {
   const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
-  const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
+  const session = reg.createSession({ cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const agents: Agent[] = [];
   for (let i = 0; i < agentCount; i++) {
     const a: Agent = {
@@ -208,7 +208,7 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 
 test("a signed inbound message cannot be replayed inside the freshness window", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
   await call("POST", `/api/sessions/${id}/integrations`, { source: "ci", secret: "hush" });
 
@@ -223,7 +223,7 @@ test("a signed inbound message cannot be replayed inside the freshness window", 
 
 test("malformed JSON bodies get a 400 instead of silently acting on {}", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const res = await fetch(`${base}/api/sessions/${data.session.id}/say`, {
     method: "POST",
     headers: { "content-type": "application/json" },

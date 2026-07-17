@@ -27,7 +27,7 @@ export async function cmdEnd(parsed: Parsed): Promise<void> {
   const ctx = requireContext(parsed.flags);
   const data = await api(ctx, "POST", `/api/sessions/${ctx.sessionId}/end`);
   console.log(`session ${ctx.sessionId} ended`);
-  console.log(`project memory now holds ${data.memory.decisions.length} decisions (.meetroom/memory.json)`);
+  console.log(`project memory now holds ${data.memory.nodes.length} nodes (.meetroom/memory.json)`);
 }
 
 /** Gracefully shut the daemon down (stops runners, persists, exits). */

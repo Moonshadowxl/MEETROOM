@@ -12,7 +12,7 @@ import type { Agent, Session } from "../src/shared/types.js";
 
 function setup(agentCount = 2): { reg: Registry; session: Session; agents: Agent[] } {
   const reg = new Registry(join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions"));
-  const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
+  const session = reg.createSession({ cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   const agents: Agent[] = [];
   for (let i = 0; i < agentCount; i++) {
     const a: Agent = {
@@ -109,7 +109,7 @@ test("human can reject any live proposal; author can only withdraw pre-vote", ()
 test("events live in an append-only log; snapshots stay lean; reload verifies the audit chain", () => {
   const dataDir = join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions");
   const reg = new Registry(dataDir);
-  const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
+  const session = reg.createSession({ cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   for (let i = 0; i < 5; i++) reg.event(session, "test-event", undefined, { i });
 
   const snapshot = JSON.parse(readFileSync(join(dataDir, `${session.id}.json`), "utf8"));
@@ -125,7 +125,7 @@ test("events live in an append-only log; snapshots stay lean; reload verifies th
 test("legacy sessions with inline events migrate to the log on load", () => {
   const dataDir = join(mkdtempSync(join(tmpdir(), "meetroom-test-")), "sessions");
   const reg = new Registry(dataDir);
-  const session = reg.createSession({ type: "sxl", cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
+  const session = reg.createSession({ cwd: mkdtempSync(join(tmpdir(), "meetroom-proj-")) });
   reg.event(session, "legacy-event");
   // Simulate a pre-snapshotting file: events inline, no ndjson log.
   const p = join(dataDir, `${session.id}.json`);
@@ -158,7 +158,7 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 
 test("task lifecycle endpoints work over HTTP", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
   const j = await call("POST", `/api/sessions/${id}/join`, { name: "alice", role: "Implementer" });
   const created = await call("POST", `/api/sessions/${id}/tasks`, { title: "build the thing" });
@@ -188,7 +188,7 @@ test("openapi lists the new routes", async () => {
 // Keep this test LAST: inviting an operator flips this daemon out of solo mode.
 test("once operators exist, speaking as the human requires an operator key", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
 
   // Solo mode: human say is frictionless.

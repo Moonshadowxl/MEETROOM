@@ -26,7 +26,7 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 
 test("end-to-end: start session, two agents join, say, state shows both", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const created = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const created = await call("POST", "/api/sessions", { cwd: proj });
   assert.equal(created.status, 201);
   const id = created.data.session.id;
 
@@ -51,7 +51,7 @@ test("end-to-end: start session, two agents join, say, state shows both", async 
 
 test("pause freezes claims and task moves; resume unfreezes", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxx", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
   const j = await call("POST", `/api/sessions/${id}/join`, { name: "a1", role: "Implementer" });
 
@@ -67,7 +67,7 @@ test("pause freezes claims and task moves; resume unfreezes", async () => {
 
 test("draft plans only create tasks after approval", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "mmm", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
 
   const plan = await call("POST", `/api/sessions/${id}/plan`, {
@@ -86,12 +86,10 @@ test("draft plans only create tasks after approval", async () => {
   assert.ok(state.data.session.tasks.some((t: any) => t.dependsOn?.length));
 });
 
-test("guild roster pre-populates waiting agents that activate on join", async () => {
+test("roster pre-populates waiting agents that activate on join", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
   const { data } = await call("POST", "/api/sessions", {
-    type: "sxl",
     cwd: proj,
-    guild: "The Refactor Crew",
     roster: [
       { name: "claude", role: "Architect", costTier: "high" },
       { name: "glm", role: "Tester", costTier: "low" },
@@ -110,7 +108,7 @@ test("guild roster pre-populates waiting agents that activate on join", async ()
 
 test("ended sessions reject work and export still functions", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
   await call("POST", `/api/sessions/${id}/end`);
   const claim = await call("POST", `/api/sessions/${id}/claim`, { agentId: "x", filepath: "y" });
@@ -124,7 +122,7 @@ test("ended sessions reject work and export still functions", async () => {
 test("inbound integration requires a valid HMAC signature", async () => {
   const { createHmac } = await import("node:crypto");
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
   await call("POST", `/api/sessions/${id}/integrations`, { source: "slack", secret: "shh" });
 
@@ -158,7 +156,7 @@ test("openapi contract is generated from the live route table", async () => {
 
 test("fork clones agents and tasks into a new session", async () => {
   const proj = mkdtempSync(join(tmpdir(), "meetroom-proj-"));
-  const { data } = await call("POST", "/api/sessions", { type: "sxl", cwd: proj });
+  const { data } = await call("POST", "/api/sessions", { cwd: proj });
   const id = data.session.id;
   await call("POST", `/api/sessions/${id}/join`, { name: "a", role: "Implementer" });
   await call("POST", `/api/sessions/${id}/tasks`, { title: "approach A vs B" });

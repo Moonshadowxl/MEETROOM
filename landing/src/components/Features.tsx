@@ -71,7 +71,7 @@ const features: { icon: string; title: string; body: ReactNode }[] = [
   {
     icon: "📈",
     title: "Self-improving",
-    body: "Retrospectives, plan simulation priced from history, fleet learning, and reputation-weighted routing.",
+    body: "Retrospectives, self-healing deadlock detectors, outcome verification, and reputation-weighted routing.",
   },
 ];
 
